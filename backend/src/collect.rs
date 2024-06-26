@@ -12,5 +12,5 @@ pub fn collect_sacct_json() -> Result<String> {
 }
 
 pub fn sacct_csvlike() -> Result<String> {
-    
+    todo!()
 }

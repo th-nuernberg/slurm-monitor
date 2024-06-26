@@ -75,7 +75,7 @@ fn collect(data_dir: impl AsRef<Path>) -> Result<()> {
 
 fn gen_filename(what: &str) -> String {
     let datetime = chrono::Local::now().format("%Y_%m_%d__%H_%M_%S_%3f");
-    format!("{datetime}__{what}")
+    format!("{datetime}__{what}.json")
 }
 
 fn setup(args: &Args) -> Result<()> {

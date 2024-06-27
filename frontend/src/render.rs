@@ -1,16 +1,16 @@
 pub mod plot {
     use anyhow::Result;
-    use plotters::prelude::*;
+    use plotters::{element::PointCollection, prelude::*};
     use std::path::Path;
 
-    pub fn active_jobs<B>(backend: B) -> Result<()>
+    pub fn simple_plot<'a, B>(backend: B, dataset: impl Iterator<Item = (f32, f32)>) -> Result<()>
     where
         B: DrawingBackend,
         B::ErrorType: 'static,
     {
         let drawing_area = backend.into_drawing_area();
 
-        drawing_area.fill(&WHITE)?;
+        //drawing_area.fill(&WHITE)?;
         let mut chart = ChartBuilder::on(&drawing_area)
             .caption("y=x^2", ("sans-serif", 50).into_font())
             .margin(5)
@@ -28,11 +28,15 @@ pub mod plot {
             .label("y = x^2")
             .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &RED));
 
+        chart.draw_series(LineSeries::new(dataset, &BLUE))?;
+
         chart
             .configure_series_labels()
             .background_style(&WHITE.mix(0.8))
             .border_style(&BLACK)
             .draw()?;
+
+        drawing_area.present()?;
 
         Ok(())
     }

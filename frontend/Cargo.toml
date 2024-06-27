@@ -7,8 +7,10 @@ edition = "2021"
 anyhow = { version = "1.0.86", features = ["backtrace"] }
 axum = "0.7.5"
 axum-macros = "0.4.1"
+base64ct = { version = "1.6.0", features = ["std"] }
 clap = { version = "4.5.7", features = ["derive", "wrap_help", "unicode"] }
 derive_more = "0.99.18"
+image = { version = "0.25.1", default-features = false, features = ["png"] }
 itertools = "0.13.0"
 json = "0.12.4"
 log = "0.4.21"

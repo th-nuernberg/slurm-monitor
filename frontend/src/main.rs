@@ -6,9 +6,10 @@ use std::{
     collections::HashMap,
     fmt::format,
     fs::File,
-    io::Read,
+    io::{Cursor, Read},
     ops::Deref,
     path::{Path, PathBuf},
+    result::Result as StdResult,
 };
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
@@ -20,14 +21,19 @@ use axum::{
     Router,
 };
 use axum_macros::debug_handler;
+use base64ct::{Base64, Encoding as _};
 use clap::Parser;
+use image::{io::Reader, ImageFormat, RgbImage};
 use itertools::Itertools as _;
+use log::error;
 use maud::{html, Markup};
 use once_cell::sync::Lazy;
-use tempfile::tempfile;
+use plotters::backend::{BitMapBackend, SVGBackend};
+use render::plot::simple_plot;
+use tempfile::{spooled_tempfile, tempfile};
 use tokio::sync::RwLock;
 
-const SACCT_HEADER_JOBID: &str = "Jobid";
+const SACCT_HEADER_JOBID: &str = "JobID";
 
 static DATA_SACCT: Lazy<RwLock<Vec<String>>> = Lazy::new(|| RwLock::new(vec![]));
 
@@ -137,22 +143,28 @@ where
 
 #[debug_handler]
 // basic handler that responds with a static string
-async fn index() -> Result<Markup, AppError> {
+async fn index() -> Markup {
     // TODO update instead of taking only last
 
-    Ok(html! {
+    let jobcount_chart = make_jobcount_chart();
+
+    html! {
         h1 { "Working!" }
         h2 { "Here be monitors…" }
-        img { }
-        //p { "DEBUG" (format!("{:?}", data.clone().map(|d| d.map(|d| &d["jobs"]))))}
-        @match sacct_table().await {
-            Ok(data) => (data),
+        @match jobcount_chart.await {
+            StdResult::Ok(data) => img src=(format!("data:image/bmp;base64,{data}", data=Base64::encode_string(&data))) {},
             Err(e) => h3 style="color: red" { (e) },
         }
-    })
+
+        //p { "DEBUG" (format!("{:?}", data.clone().map(|d| d.map(|d| &d["jobs"]))))}
+        @match sacct_table().await {
+            StdResult::Ok(data) => (data),
+            Err(e) => h3 style="color: red" { (e) },
+        }
+    }
 }
 
-async fn jobcount_chart() -> Result<PathBuf> {
+async fn make_jobcount_chart() -> Result<Vec<u8>> {
     fn is_main_job(id: impl AsRef<str>) -> bool {
         !id.as_ref().contains('.')
     }
@@ -164,13 +176,13 @@ async fn jobcount_chart() -> Result<PathBuf> {
             })
             .map(String::from)
     }
-
-    let file = tempfile()?;
-
     let data = DATA_SACCT.read().await;
-    ensure!(data.len() > 0);
+    if data.is_empty() {
+        Err(anyhow!("no datasets found"))?;
+    };
 
-    data.iter()
+    let dataset = data
+        .iter()
         .map(parse::sacct_csvlike)
         .map_ok(|(header, data)| {
             let jobid_key = header.iter().any(|s| *s == SACCT_HEADER_JOBID);
@@ -180,20 +192,32 @@ async fn jobcount_chart() -> Result<PathBuf> {
 
             let job_ids = data
                 .into_iter()
-                .map(|j| {
-                    let _ = j.and_then(|j| {
-                        let x = get_id(&j);
-                        let x = x.map(|s| s.to_owned());
-                        x
-                    });
-                })
-                .filter(|j| j.is_err() || j.is_ok_and(is_main_job));
+                .map(|j| j.and_then(|j| get_id(&j)))
+                .filter(|j| j.is_err() || j.as_ref().is_ok_and(is_main_job)); // TODO why tf are map_ok and filter_ok not working ?!?
             let job_count = job_ids.process_results(|jobs| jobs.count());
 
             job_count
-        });
+        })
+        .flatten()
+        .process_results(|x| x.collect_vec())?;
 
-    todo!()
+    let (x, y) = (800u32, 600u32);
+    let mut buf = vec![63; (x * y * 3).try_into().unwrap()]; // RGB: bit depth = 24
+    render::plot::simple_plot(
+        BitMapBackend::with_buffer(buf.as_mut_slice(), (x, y)),
+        dataset
+            .iter()
+            .enumerate()
+            .map(|(x, &y)| (x as f32, y as f32)),
+    )?;
+    let mut image = RgbImage::from_raw(800, 600, buf)
+        .ok_or_else(|| anyhow!("failed to create image from internal buffer (too small?)"))
+        .context("rendering job graph")?;
+
+    let mut output_buf: Vec<u8> = Vec::new();
+    image.write_to(&mut Cursor::new(&mut output_buf), ImageFormat::Png)?;
+
+    Ok(output_buf)
 }
 
 async fn sacct_table() -> Result<Markup> {
@@ -234,7 +258,7 @@ async fn sacct_table() -> Result<Markup> {
             tbody {
                 @for line in data.iter().filter(|job| job.as_ref().is_ok_and(|job| job.get("State").is_some_and(|state| state == "RUNNING"))) {
                     @match line {
-                        Ok(line) => tr {
+                        anyhow::Result::Ok(line) => tr {
                             @for key in header.iter() {
                                 @match &line.get(key) {
                                     Some(val) => td { (val) },

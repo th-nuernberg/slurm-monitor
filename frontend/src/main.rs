@@ -3,6 +3,7 @@ mod parse;
 mod render;
 
 use std::{
+    collections::HashMap,
     fmt::format,
     fs::File,
     io::Read,
@@ -25,6 +26,8 @@ use maud::{html, Markup};
 use once_cell::sync::Lazy;
 use tempfile::tempfile;
 use tokio::sync::RwLock;
+
+const SACCT_HEADER_JOBID: &str = "Jobid";
 
 static DATA_SACCT: Lazy<RwLock<Vec<String>>> = Lazy::new(|| RwLock::new(vec![]));
 
@@ -150,12 +153,45 @@ async fn index() -> Result<Markup, AppError> {
 }
 
 async fn jobcount_chart() -> Result<PathBuf> {
+    fn is_main_job(id: impl AsRef<str>) -> bool {
+        !id.as_ref().contains('.')
+    }
+
+    fn get_id(job: &HashMap<String, String>) -> Result<String> {
+        job.get(SACCT_HEADER_JOBID)
+            .ok_or_else(|| {
+                anyhow!("Data inconsistency at '{job:?}': `{SACCT_HEADER_JOBID}` not found")
+            })
+            .map(String::from)
+    }
+
     let file = tempfile()?;
 
     let data = DATA_SACCT.read().await;
     ensure!(data.len() > 0);
-    
-    data.iter().filter_map(|snapshot| )
+
+    data.iter()
+        .map(parse::sacct_csvlike)
+        .map_ok(|(header, data)| {
+            let jobid_key = header.iter().any(|s| *s == SACCT_HEADER_JOBID);
+            if !jobid_key {
+                bail!("Dataset contains no job ids!");
+            };
+
+            let job_ids = data
+                .into_iter()
+                .map(|j| {
+                    let _ = j.and_then(|j| {
+                        let x = get_id(&j);
+                        let x = x.map(|s| s.to_owned());
+                        x
+                    });
+                })
+                .filter(|j| j.is_err() || j.is_ok_and(is_main_job));
+            let job_count = job_ids.process_results(|jobs| jobs.count());
+
+            job_count
+        });
 
     todo!()
 }

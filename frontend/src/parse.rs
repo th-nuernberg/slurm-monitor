@@ -7,7 +7,10 @@ use thiserror::Error;
 /// Given output from `sacct -P`, parses it into a line vector consisting of HashMaps. This works by taking the first line as header.
 ///
 /// Returns a (header, data) tuple
-pub fn sacct_csvlike(input: &str) -> Result<(Vec<String>, Vec<Result<HashMap<String, String>>>)> {
+pub fn sacct_csvlike(
+    input: impl AsRef<str>,
+) -> Result<(Vec<String>, Vec<Result<HashMap<String, String>>>)> {
+    let input = input.as_ref();
     let mut lines = input.lines();
     let Some(header) = lines.next() else {
         bail!("data seems to be empty ({input})")

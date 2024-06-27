@@ -1,9 +1,16 @@
 mod cli;
 mod parse;
+mod render;
 
-use std::{fmt::format, fs::File, io::Read, ops::Deref, path::Path};
+use std::{
+    fmt::format,
+    fs::File,
+    io::Read,
+    ops::Deref,
+    path::{Path, PathBuf},
+};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, ensure, Context, Result};
 use axum::{
     handler::Handler,
     http::StatusCode,
@@ -16,6 +23,7 @@ use clap::Parser;
 use itertools::Itertools as _;
 use maud::{html, Markup};
 use once_cell::sync::Lazy;
+use tempfile::tempfile;
 use tokio::sync::RwLock;
 
 static DATA_SACCT: Lazy<RwLock<Vec<String>>> = Lazy::new(|| RwLock::new(vec![]));
@@ -132,12 +140,24 @@ async fn index() -> Result<Markup, AppError> {
     Ok(html! {
         h1 { "Working!" }
         h2 { "Here be monitors…" }
+        img { }
         //p { "DEBUG" (format!("{:?}", data.clone().map(|d| d.map(|d| &d["jobs"]))))}
         @match sacct_table().await {
             Ok(data) => (data),
             Err(e) => h3 style="color: red" { (e) },
         }
     })
+}
+
+async fn jobcount_chart() -> Result<PathBuf> {
+    let file = tempfile()?;
+
+    let data = DATA_SACCT.read().await;
+    ensure!(data.len() > 0);
+    
+    data.iter().filter_map(|snapshot| )
+
+    todo!()
 }
 
 async fn sacct_table() -> Result<Markup> {

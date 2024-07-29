@@ -28,7 +28,11 @@ use itertools::Itertools as _;
 use log::error;
 use maud::{html, Markup};
 use once_cell::sync::Lazy;
-use plotters::backend::{BitMapBackend, SVGBackend};
+use plotters::{
+    backend::{BitMapBackend, DrawingBackend, SVGBackend},
+    chart::ChartContext,
+    coord::CoordTranslate,
+};
 use render::plot::simple_plot;
 use tempfile::{spooled_tempfile, tempfile};
 use tokio::sync::RwLock;
@@ -152,7 +156,7 @@ async fn index() -> Markup {
         h1 { "Working!" }
         h2 { "Here be monitors…" }
         @match jobcount_chart.await {
-            StdResult::Ok(data) => img src=(format!("data:image/bmp;base64,{data}", data=Base64::encode_string(&data))) {},
+            StdResult::Ok(data) => img src=(format!("data:image/png;base64,{data}", data=Base64::encode_string(&data))) {},
             Err(e) => h3 style="color: red" { (e) },
         }
 
@@ -162,6 +166,28 @@ async fn index() -> Markup {
             Err(e) => h3 style="color: red" { (e) },
         }
     }
+}
+
+fn make_chart<DB, CT>(title: impl AsRef<str>, chart: ChartContext<'_, DB, CT>) -> Result<Vec<u8>>
+where
+    DB: DrawingBackend,
+    CT: CoordTranslate,
+{
+    let (x, y) = (800u32, 600u32);
+    let mut buf = vec![0; (x * y * 3).try_into().unwrap()]; // RGB: bit depth = 24
+    render::plot::simple_plot(
+        BitMapBackend::with_buffer(buf.as_mut_slice(), (x, y)),
+        title,
+        dataset.iter().enumerate().map(|(x, &y)| (x)),
+    )?;
+    let mut image = RgbImage::from_raw(x, y, buf)
+        .ok_or_else(|| anyhow!("failed to create image from internal buffer (too small?)"))
+        .context("rendering job graph")?;
+
+    let mut output_buf: Vec<u8> = Vec::new();
+    image.write_to(&mut Cursor::new(&mut output_buf), ImageFormat::Png)?;
+
+    Ok(output_buf)
 }
 
 async fn make_jobcount_chart() -> Result<Vec<u8>> {
@@ -202,15 +228,16 @@ async fn make_jobcount_chart() -> Result<Vec<u8>> {
         .process_results(|x| x.collect_vec())?;
 
     let (x, y) = (800u32, 600u32);
-    let mut buf = vec![63; (x * y * 3).try_into().unwrap()]; // RGB: bit depth = 24
+    let mut buf = vec![0; (x * y * 3).try_into().unwrap()]; // RGB: bit depth = 24
     render::plot::simple_plot(
         BitMapBackend::with_buffer(buf.as_mut_slice(), (x, y)),
+        "Number of active jobs",
         dataset
             .iter()
             .enumerate()
             .map(|(x, &y)| (x as f32, y as f32)),
     )?;
-    let mut image = RgbImage::from_raw(800, 600, buf)
+    let mut image = RgbImage::from_raw(x, y, buf)
         .ok_or_else(|| anyhow!("failed to create image from internal buffer (too small?)"))
         .context("rendering job graph")?;
 
@@ -219,6 +246,8 @@ async fn make_jobcount_chart() -> Result<Vec<u8>> {
 
     Ok(output_buf)
 }
+
+async fn make_memory_efficacy_chart() -> Result<Vec<u8>> {}
 
 async fn sacct_table() -> Result<Markup> {
     let _table_fields = [

@@ -33,7 +33,7 @@ use plotters::{
     chart::ChartContext,
     coord::CoordTranslate,
 };
-use render::plot::simple_plot;
+use render::plot::simple_plot_f32_f32;
 use tempfile::{spooled_tempfile, tempfile};
 use tokio::sync::RwLock;
 
@@ -168,14 +168,14 @@ async fn index() -> Markup {
     }
 }
 
-fn make_chart<DB, CT>(title: impl AsRef<str>, chart: ChartContext<'_, DB, CT>) -> Result<Vec<u8>>
+/*fn make_chart<DB, CT>(title: impl AsRef<str>, dataset: ChartContext<'_, DB, CT>) -> Result<Vec<u8>>
 where
     DB: DrawingBackend,
     CT: CoordTranslate,
 {
     let (x, y) = (800u32, 600u32);
     let mut buf = vec![0; (x * y * 3).try_into().unwrap()]; // RGB: bit depth = 24
-    render::plot::simple_plot(
+    render::plot::simple_plot_f32_f32(
         BitMapBackend::with_buffer(buf.as_mut_slice(), (x, y)),
         title,
         dataset.iter().enumerate().map(|(x, &y)| (x)),
@@ -188,7 +188,7 @@ where
     image.write_to(&mut Cursor::new(&mut output_buf), ImageFormat::Png)?;
 
     Ok(output_buf)
-}
+}*/
 
 async fn make_jobcount_chart() -> Result<Vec<u8>> {
     fn is_main_job(id: impl AsRef<str>) -> bool {
@@ -228,14 +228,16 @@ async fn make_jobcount_chart() -> Result<Vec<u8>> {
         .process_results(|x| x.collect_vec())?;
 
     let (x, y) = (800u32, 600u32);
-    let mut buf = vec![0; (x * y * 3).try_into().unwrap()]; // RGB: bit depth = 24
-    render::plot::simple_plot(
-        BitMapBackend::with_buffer(buf.as_mut_slice(), (x, y)),
+    let mut buf = vec![];
+    simple_plot_f32_f32(
+        render::create_bitmap_buffer(&mut buf, x, y),
         "Number of active jobs",
         dataset
             .iter()
             .enumerate()
-            .map(|(x, &y)| (x as f32, y as f32)),
+            .map(|(x, &y)| ((x as f32).into(), (y as f32).into()))
+            .collect_vec()
+            .as_slice(),
     )?;
     let mut image = RgbImage::from_raw(x, y, buf)
         .ok_or_else(|| anyhow!("failed to create image from internal buffer (too small?)"))
@@ -247,7 +249,7 @@ async fn make_jobcount_chart() -> Result<Vec<u8>> {
     Ok(output_buf)
 }
 
-async fn make_memory_efficacy_chart() -> Result<Vec<u8>> {}
+//async fn make_memory_efficacy_chart() -> Result<Vec<u8>> {}
 
 async fn sacct_table() -> Result<Markup> {
     let _table_fields = [

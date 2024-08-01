@@ -1,11 +1,12 @@
 mod cli;
+mod data;
 mod parse;
 mod render;
 
 use std::{
     collections::HashMap,
     fmt::format,
-    fs::File,
+    fs::{self, DirEntry, File, FileType},
     io::{Cursor, Read},
     ops::Deref,
     path::{Path, PathBuf},
@@ -22,6 +23,7 @@ use axum::{
 };
 use axum_macros::debug_handler;
 use base64ct::{Base64, Encoding as _};
+use chrono::{DateTime, Duration, Local, NaiveDateTime};
 use clap::Parser;
 use image::{io::Reader, ImageFormat, RgbImage};
 use itertools::Itertools as _;
@@ -33,13 +35,14 @@ use plotters::{
     chart::ChartContext,
     coord::CoordTranslate,
 };
-use render::plot::simple_plot_f32_f32;
 use tempfile::{spooled_tempfile, tempfile};
 use tokio::sync::RwLock;
 
+use render::plot;
+
 const SACCT_HEADER_JOBID: &str = "JobID";
 
-static DATA_SACCT: Lazy<RwLock<Vec<String>>> = Lazy::new(|| RwLock::new(vec![]));
+static DATA_SACCT: Lazy<RwLock<Vec<(NaiveDateTime, String)>>> = Lazy::new(|| RwLock::new(vec![]));
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -52,7 +55,7 @@ async fn main() -> Result<()> {
     let (data, errors): (Vec<_>, Vec<_>) = sacct_data_local.into_iter().partition_result();
     errors
         .into_iter()
-        .for_each(|e| eprintln!("{}", e.context("parsing sacct data")));
+        .for_each(|e| eprintln!("{:#}", e.context("parsing sacct data")));
     *DATA_SACCT.deref().write().await = data;
 
     // build our application with a route
@@ -79,10 +82,27 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn load_sacct(data_dir: impl AsRef<Path>) -> Result<Vec<Result<String>>> {
+// TODO move this to data, and abstract over datasets
+fn load_sacct(data_dir: impl AsRef<Path>) -> Result<Vec<Result<(NaiveDateTime, String)>>> {
+    fn metadata(entry: &DirEntry) -> Result<(String, FileType)> {
+        let name = entry.file_name().to_string_lossy().into_owned();
+
+        Ok((
+            entry
+                .file_name()
+                .to_str()
+                .ok_or_else(|| anyhow!("{name}: non-unicode in file name"))?
+                .to_owned(),
+            entry
+                .file_type()
+                .with_context(|| format!("getting file type of {name}"))?,
+        ))
+    }
+
     let readdir = std::fs::read_dir(data_dir)?;
     let data = readdir
-        .map(|entry| -> Result<Option<String>> {
+        .map(|entry| -> Result<Option<(NaiveDateTime, String)>> {
+            // remove walkdir errors, since we can't/won't really deal with FS errors in our data dir
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(e) => {
@@ -91,21 +111,17 @@ fn load_sacct(data_dir: impl AsRef<Path>) -> Result<Vec<Result<String>>> {
                 }
             };
 
-            if !entry.file_name().to_string_lossy().ends_with(".csv") {
+            let (filename, filetype) = metadata(&entry)?;
+
+            if !filename.ends_with(".csv") || !filetype.is_file() {
                 return Ok(None);
             }
 
-            let error_context =
-                || format!("reading entry {}", entry.file_name().to_str().unwrap_or(""));
+            let content =
+                fs::read_to_string(entry.path()).with_context(|| format!("reading {filename}"))?;
+            let datetime = data::datetime_from_filename(&filename)?;
 
-            let filetype = entry.file_type().with_context(error_context)?;
-            if !filetype.is_file() {
-                return Result::Ok(None);
-            }
-            let mut file = File::open(entry.path()).with_context(error_context)?;
-            let mut buf = String::new(); // TODO with_capacity(file_size)
-            let _num_bytes = file.read_to_string(&mut buf).with_context(error_context)?;
-            Result::Ok(Some(buf))
+            Result::Ok(Some((datetime, content)))
         })
         // Result<Option<Entry>> => Option<Result<Entry>> =(filter)=> Result<Entry>
         // since we don't care about None's
@@ -150,7 +166,7 @@ where
 async fn index() -> Markup {
     // TODO update instead of taking only last
 
-    let jobcount_chart = make_jobcount_chart();
+    let jobcount_chart = make_jobcount_48h_chart();
 
     html! {
         h1 { "Working!" }
@@ -190,7 +206,7 @@ where
     Ok(output_buf)
 }*/
 
-async fn make_jobcount_chart() -> Result<Vec<u8>> {
+async fn make_jobcount_48h_chart() -> Result<Vec<u8>> {
     fn is_main_job(id: impl AsRef<str>) -> bool {
         !id.as_ref().contains('.')
     }
@@ -209,8 +225,9 @@ async fn make_jobcount_chart() -> Result<Vec<u8>> {
 
     let dataset = data
         .iter()
-        .map(parse::sacct_csvlike)
-        .map_ok(|(header, data)| {
+        .filter(|(datetime, _)| *datetime > Local::now().naive_local() - Duration::hours(48))
+        .map(|(datetime, content)| parse::sacct_csvlike(content).map(|data| (*datetime, data)))
+        .map_ok(|(datetime, (header, data))| {
             let jobid_key = header.iter().any(|s| *s == SACCT_HEADER_JOBID);
             if !jobid_key {
                 bail!("Dataset contains no job ids!");
@@ -222,24 +239,18 @@ async fn make_jobcount_chart() -> Result<Vec<u8>> {
                 .filter(|j| j.is_err() || j.as_ref().is_ok_and(is_main_job)); // TODO why tf are map_ok and filter_ok not working ?!?
             let job_count = job_ids.process_results(|jobs| jobs.count());
 
-            job_count
+            job_count.map(|count| (datetime, count))
         })
         .flatten()
         .process_results(|x| x.collect_vec())?;
 
     let (x, y) = (800u32, 600u32);
     let mut buf = vec![];
-    simple_plot_f32_f32(
+    plot::jobcount_over_time(
         render::create_bitmap_buffer(&mut buf, x, y),
-        "Number of active jobs",
-        dataset
-            .iter()
-            .enumerate()
-            .map(|(x, &y)| ((x as f32).into(), (y as f32).into()))
-            .collect_vec()
-            .as_slice(),
+        dataset.as_slice(),
     )?;
-    let mut image = RgbImage::from_raw(x, y, buf)
+    let mut image = RgbImage::from_raw(x, y, buf) // TODO there was a more compact way of loading raw images (maybe directly creating a buffer via images crate). Look it up in docs.
         .ok_or_else(|| anyhow!("failed to create image from internal buffer (too small?)"))
         .context("rendering job graph")?;
 
@@ -274,7 +285,8 @@ async fn sacct_table() -> Result<Markup> {
     let Some(data) = data.last() else {
         return Err(anyhow!("Somehow global DATA_SACCT seems to be empty").into());
     };
-    let (header, data) = match parse::sacct_csvlike(data) {
+    let (header, data) = match parse::sacct_csvlike(&data.1) {
+        // TODO somehow I thought parsing the csv in every function would be better than (asyncly) one-time at startup -__-. Fix this.
         Ok(data) => data,
         Err(_) => todo!(),
     };

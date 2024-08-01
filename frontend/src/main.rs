@@ -23,7 +23,7 @@ use axum::{
 };
 use axum_macros::debug_handler;
 use base64ct::{Base64, Encoding as _};
-use chrono::NaiveDateTime;
+use chrono::{DateTime, Duration, Local, NaiveDateTime};
 use clap::Parser;
 use image::{io::Reader, ImageFormat, RgbImage};
 use itertools::Itertools as _;
@@ -55,7 +55,7 @@ async fn main() -> Result<()> {
     let (data, errors): (Vec<_>, Vec<_>) = sacct_data_local.into_iter().partition_result();
     errors
         .into_iter()
-        .for_each(|e| eprintln!("{}", e.context("parsing sacct data")));
+        .for_each(|e| eprintln!("{:#}", e.context("parsing sacct data")));
     *DATA_SACCT.deref().write().await = data;
 
     // build our application with a route
@@ -166,7 +166,7 @@ where
 async fn index() -> Markup {
     // TODO update instead of taking only last
 
-    let jobcount_chart = make_jobcount_chart();
+    let jobcount_chart = make_jobcount_48h_chart();
 
     html! {
         h1 { "Working!" }
@@ -206,7 +206,7 @@ where
     Ok(output_buf)
 }*/
 
-async fn make_jobcount_chart() -> Result<Vec<u8>> {
+async fn make_jobcount_48h_chart() -> Result<Vec<u8>> {
     fn is_main_job(id: impl AsRef<str>) -> bool {
         !id.as_ref().contains('.')
     }
@@ -225,6 +225,7 @@ async fn make_jobcount_chart() -> Result<Vec<u8>> {
 
     let dataset = data
         .iter()
+        .filter(|(datetime, _)| *datetime > Local::now().naive_local() - Duration::hours(48))
         .map(|(datetime, content)| parse::sacct_csvlike(content).map(|data| (*datetime, data)))
         .map_ok(|(datetime, (header, data))| {
             let jobid_key = header.iter().any(|s| *s == SACCT_HEADER_JOBID);

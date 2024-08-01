@@ -2,6 +2,9 @@ use std::iter;
 
 use plotters::prelude::BitMapBackend;
 
+//const FONT_FAMILY: &str = "DejaVuSansMono"; // somehow crashes on spaces on my system
+const FONT_FAMILY: &str = "LiberationMono";
+
 pub fn create_bitmap_buffer(buf: &mut Vec<u8>, x: u32, y: u32) -> BitMapBackend {
     let len = (x * y * 3).try_into().unwrap();
 
@@ -18,11 +21,17 @@ pub mod plot {
     use anyhow::{bail, Context, Result};
     use chrono::{DateTime, Duration, Local, NaiveDateTime};
     use ordered_float::OrderedFloat;
-    use plotters::{coord::types::Monthly, prelude::*};
+    use plotters::{
+        coord::types::Monthly,
+        prelude::*,
+        style::text_anchor::{HPos, Pos, VPos},
+    };
 
     use itertools::Itertools as _;
 
-    const JOBCOUNT_OVER_TIME_TITLE: &str = "Jobcount over time";
+    use super::FONT_FAMILY;
+
+    const JOBCOUNT_OVER_TIME_TITLE: &str = "Jobcount_(last_48h)";
 
     #[allow(non_snake_case)]
     const fn TITLE_FONT_SIZE((w, h): (u32, u32)) -> u32 {
@@ -30,7 +39,7 @@ pub mod plot {
         avg / 28
     }
 
-    struct Point<Tx, Ty> {
+    pub struct Point<Tx, Ty> {
         x: Tx,
         y: Ty,
     }
@@ -84,7 +93,7 @@ pub mod plot {
             &[singleton] => ((*singleton).into(), (*singleton).into()),
             &[first, .., last] => ((*first).into(), (*last).into()),
         };
-        let coord: RangedDateTime<_> = (first.x..last.x).into();
+        let coord: RangedDateTime<_> = (first.x..last.x).into(); // TODO change formatting to be less verbose so the x axis gets smaller, or use (num hours back from now)
 
         let drawing_area = backend.into_drawing_area();
         drawing_area.fill(&WHITE)?;
@@ -92,27 +101,31 @@ pub mod plot {
         let mut chart = ChartBuilder::on(&drawing_area)
             .caption(
                 JOBCOUNT_OVER_TIME_TITLE,
-                ("sans-serif", TITLE_FONT_SIZE(drawing_area.dim_in_pixel())).into_font(),
+                (FONT_FAMILY, TITLE_FONT_SIZE(drawing_area.dim_in_pixel())).into_font(),
             )
             .margin(5)
-            .x_label_area_size(30)
+            .x_label_area_size(120)
             .y_label_area_size(30)
             .build_cartesian_2d(coord.step(Duration::hours(1)), min.y..max.y)?;
-        chart.configure_mesh().draw()?;
-
         chart
-            .draw_series(LineSeries::new(
-                dataset.clone().into_iter().map(|x| *x),
-                &BLUE,
-            ))?
-            .label("Jobcount (as per sacct)");
-        //.legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &RED));
+            .configure_mesh()
+            .x_label_style(
+                TextStyle::from((FONT_FAMILY, 12).into_font())
+                    .pos(Pos::new(HPos::Right, VPos::Default))
+                    .transform(FontTransform::Rotate270), // TODO hack transform <= mod90 with sine/cosine
+            )
+            .draw()?;
+
+        chart.draw_series(LineSeries::new(
+            dataset.clone().into_iter().map(|x| *x),
+            &BLUE,
+        ))?;
 
         chart
             .configure_series_labels()
             .background_style(&WHITE.mix(0.8))
             .border_style(&BLACK)
-            .label_font(("sans-serif", 12).into_font())
+            .label_font((FONT_FAMILY, 14).into_font())
             .draw()?;
 
         drawing_area.present()?;

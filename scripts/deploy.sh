@@ -6,23 +6,32 @@
 # Enable strict error handling
 set -euo pipefail
 
-# Load environment variables from .env file
-if [[ -f "deploy.env" ]]; then
-    export $(grep -v '^#' deploy.env | xargs)
+# Redirect stdout and stderr to both console and log file
+LOG_FILE="${LOG_FILE:-/tmp/deploy.log}"
+rm -f "$LOG_FILE" # Ensure the log file is clean
+touch "$LOG_FILE"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+# Determine the directory of the script and set the repository directory
+SCRIPT_DIR="$(dirname "$(realpath "$0")")"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Load environment variables from .env file located in the REPO_DIR
+if [[ -f "$REPO_DIR/deploy.env" ]]; then
+    set -a # automatically export all variables
+    source "$REPO_DIR/deploy.env"
+    set +a
 else
-    echo "deploy.env file not found. Please create one based on deploy.env.example." >&2
+    echo "deploy.env file not found in the repository directory ($REPO_DIR). Please create one based on deploy.env.example." >&2
     exit 1
 fi
 
 # Set variables
+BRANCH="${BRANCH:-main}"
 TMUX_SESSION_NAME="${TMUX_SESSION_NAME:-slurm_deploy}"
 EMAIL_SUBJECT="${EMAIL_SUBJECT:-[slurm-monitor] Deployment Failure}"
-LOG_FILE="${LOG_FILE:-/tmp/deploy.log}"
 RUN_PARAMS="${RUN_PARAMS:-}"
 
-
-SCRIPT_DIR="$(dirname "$(realpath "$0")")"
-REPO_DIR="$(dirname "$SCRIPT_DIR")"
 
 # ---- Start of logic ----
 # Convert comma-separated EMAIL_TO into a Bash array
@@ -36,6 +45,9 @@ handle_error() {
     send_email
     exit $exit_code
 }
+
+# Trap errors and call the error handler
+trap 'handle_error' ERR
 
 # Function to send email
 send_email() {
@@ -61,9 +73,6 @@ validate_email() {
         fi
     done
 }
-
-# Trap errors and call the error handler
-trap 'handle_error' ERR
 
 # Check for required commands
 check_command git
@@ -94,9 +103,15 @@ if [[ ! -d ".git" ]]; then
     handle_error "Directory '$REPO_DIR' is not a Git repository."
 fi
 
+# Ensure being on the `main` branch
+current_branch=$(git rev-parse --abbrev-ref HEAD)
+if [[ "$current_branch" != "$BRANCH" ]]; then
+    handle_error "You are currently on the '$current_branch' branch. Please switch to the 'main' branch to proceed."
+fi
+
 # Pull new changes from GitHub (--ff-only)
 echo "Pulling latest changes from GitHub..."
-git pull --ff-only origin main
+git pull --ff-only
 
 # Rebuild using Cargo
 echo "Rebuilding project..."
@@ -112,8 +127,8 @@ fi
 echo "Creating new tmux session..."
 tmux new-session -d -s "$TMUX_SESSION_NAME"
 
-# Launch the server in the new tmux session
+# Launch the server in the new tmux session with RUN_PARAMS
 echo "Launching server in tmux session..."
-tmux send-keys -t "$TMUX_SESSION_NAME" "cd $REPO_DIR && cargo run --release -- $RUN_PARAMS" C-m
+tmux send-keys -t "$TMUX_SESSION_NAME" "cd $REPO_DIR && cargo run --bin frontend --release -- $RUN_PARAMS" C-m
 
 echo "Deployment completed successfully!"

@@ -38,6 +38,7 @@ pub fn sacct_csvlike(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FileSize(pub usize);
 
+#[allow(unused)] // FIXME remove
 impl FileSize {
     pub fn as_bytes(&self) -> usize {
         self.0
@@ -118,8 +119,11 @@ pub enum FileSizeParseError {
 }
 
 #[cfg(test)]
+#[allow(non_snake_case)]
+#[allow(non_upper_case_globals)]
 mod tests {
     use super::*;
+
     const ε: f64 = 0.0000000001;
 
     #[test]

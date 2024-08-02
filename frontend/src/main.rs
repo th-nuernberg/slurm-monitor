@@ -3,6 +3,8 @@ mod data;
 mod parse;
 mod render;
 
+// TODO block more warnings, maybe here (in dev), maybe in pipeline
+
 use std::{
     collections::HashMap,
     fmt::format,
@@ -72,6 +74,7 @@ async fn main() -> Result<()> {
         .route("/", get(index));
 
     // run our app with hyper, listening globally on port 3333
+    // TODO make port an argument
     let port: u16 = 3333;
     let address = format!("0.0.0.0:{port}");
 

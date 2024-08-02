@@ -1,5 +1,6 @@
 #!/bin/sh
 
+
 project_path=$(dirname "$(dirname "$0")")
 
 # Don't use `--delete` since any error in the path could cascade unwanted deletes all over the filesystem.

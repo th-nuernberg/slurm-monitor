@@ -11,7 +11,7 @@ name: rust-clippy analyze
 
 on:
   push:
-    branches: [ "main", "development" ]
+    branches: [ "main" ]
   pull_request:
     # The branches below must be a subset of the branches above
     branches: [ "main" ]
@@ -25,7 +25,6 @@ jobs:
     permissions:
       contents: read
       security-events: write
-      actions: read # only required for a private repository by github/codeql-action/upload-sarif to get the Action run status
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -53,3 +52,13 @@ jobs:
         with:
           sarif_file: rust-clippy-results.sarif
           wait-for-processing: true
+  
+  shellcheck:
+    name: Run shellcheck on shell scripts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: ShellCheck - GitHub Action
+        uses: nuwaycloud/shellcheck-action@v0.0.4
+            

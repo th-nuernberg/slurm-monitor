@@ -16,13 +16,12 @@ pub fn create_bitmap_buffer(buf: &mut Vec<u8>, x: u32, y: u32) -> BitMapBackend 
 }
 
 pub mod plot {
-    use std::ops::Deref;
+    
 
-    use anyhow::{bail, Context, Result};
-    use chrono::{DateTime, Duration, Local, NaiveDateTime};
-    use ordered_float::OrderedFloat;
+    use anyhow::{bail, Result};
+    use chrono::{Duration, NaiveDateTime};
+    
     use plotters::{
-        coord::types::Monthly,
         prelude::*,
         style::text_anchor::{HPos, Pos, VPos},
     };
@@ -77,9 +76,9 @@ pub mod plot {
         })
     }
 
-    pub fn jobcount_over_time<'b, DB>(
+    pub fn jobcount_over_time<DB>(
         backend: DB,
-        dataset: &'b [(NaiveDateTime, usize)],
+        dataset: &[(NaiveDateTime, usize)],
     ) -> Result<()>
     where
         DB: DrawingBackend,
@@ -117,14 +116,14 @@ pub mod plot {
             .draw()?;
 
         chart.draw_series(LineSeries::new(
-            dataset.clone().into_iter().map(|x| *x),
+            dataset.clone().into_iter().copied(),
             &BLUE,
         ))?;
 
         chart
             .configure_series_labels()
-            .background_style(&WHITE.mix(0.8))
-            .border_style(&BLACK)
+            .background_style(WHITE.mix(0.8))
+            .border_style(BLACK)
             .label_font((FONT_FAMILY, 14).into_font())
             .draw()?;
 

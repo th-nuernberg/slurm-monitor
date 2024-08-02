@@ -11,8 +11,6 @@ pub fn datetime_from_filename(name: &str) -> Result<NaiveDateTime> {
         .skip(POSITION)
         .take(RESULTING_FORMAT_LEN)
         .collect();
-    Ok(
-        NaiveDateTime::parse_from_str(&datetime_part.as_str(), &FORMAT)
-            .with_context(|| format!("parsing datetime from {name}"))?,
-    )
+    NaiveDateTime::parse_from_str(datetime_part.as_str(), FORMAT)
+            .with_context(|| format!("parsing datetime from {name}"))
 }

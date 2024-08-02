@@ -7,17 +7,15 @@ mod render;
 
 use std::{
     collections::HashMap,
-    fmt::format,
-    fs::{self, DirEntry, File, FileType},
+    fs::{self, DirEntry, FileType},
     io::{Cursor, Read},
     ops::Deref,
-    path::{Path, PathBuf},
+    path::Path,
     result::Result as StdResult,
 };
 
-use anyhow::{anyhow, bail, ensure, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use axum::{
-    handler::Handler,
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
@@ -25,19 +23,12 @@ use axum::{
 };
 use axum_macros::debug_handler;
 use base64ct::{Base64, Encoding as _};
-use chrono::{DateTime, Duration, Local, NaiveDateTime};
+use chrono::{Duration, Local, NaiveDateTime};
 use clap::Parser;
-use image::{io::Reader, ImageFormat, RgbImage};
+use image::{ImageFormat, RgbImage};
 use itertools::Itertools as _;
-use log::error;
 use maud::{html, Markup};
 use once_cell::sync::Lazy;
-use plotters::{
-    backend::{BitMapBackend, DrawingBackend, SVGBackend},
-    chart::ChartContext,
-    coord::CoordTranslate,
-};
-use tempfile::{spooled_tempfile, tempfile};
 use tokio::sync::RwLock;
 
 use render::plot;
@@ -253,7 +244,7 @@ async fn make_jobcount_48h_chart() -> Result<Vec<u8>> {
         render::create_bitmap_buffer(&mut buf, x, y),
         dataset.as_slice(),
     )?;
-    let mut image = RgbImage::from_raw(x, y, buf) // TODO there was a more compact way of loading raw images (maybe directly creating a buffer via images crate). Look it up in docs.
+    let image = RgbImage::from_raw(x, y, buf) // TODO there was a more compact way of loading raw images (maybe directly creating a buffer via images crate). Look it up in docs.
         .ok_or_else(|| anyhow!("failed to create image from internal buffer (too small?)"))
         .context("rendering job graph")?;
 
@@ -286,7 +277,7 @@ async fn sacct_table() -> Result<Markup> {
 
     let data = DATA_SACCT.read().await;
     let Some(data) = data.last() else {
-        return Err(anyhow!("Somehow global DATA_SACCT seems to be empty").into());
+        bail!("Somehow global DATA_SACCT seems to be empty");
     };
     let (header, data) = match parse::sacct_csvlike(&data.1) {
         // TODO somehow I thought parsing the csv in every function would be better than (asyncly) one-time at startup -__-. Fix this.

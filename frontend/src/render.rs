@@ -16,11 +16,10 @@ pub fn create_bitmap_buffer(buf: &mut Vec<u8>, x: u32, y: u32) -> BitMapBackend 
 }
 
 pub mod plot {
-    
 
     use anyhow::{bail, Result};
     use chrono::{Duration, NaiveDateTime};
-    
+
     use plotters::{
         prelude::*,
         style::text_anchor::{HPos, Pos, VPos},
@@ -67,7 +66,7 @@ pub mod plot {
         Tx: Clone,
         Ty: Clone + PartialOrd,
     {
-        Ok(match dataset.minmax_by_key(|(x, y)| y.clone()) {
+        Ok(match dataset.minmax_by_key(|(_, y)| y.clone()) {
             itertools::MinMaxResult::NoElements => bail!("empty dataset"),
             itertools::MinMaxResult::OneElement((x, y)) => {
                 (Point(x.clone(), y.clone()), Point(x, y))
@@ -76,10 +75,7 @@ pub mod plot {
         })
     }
 
-    pub fn jobcount_over_time<DB>(
-        backend: DB,
-        dataset: &[(NaiveDateTime, usize)],
-    ) -> Result<()>
+    pub fn jobcount_over_time<DB>(backend: DB, dataset: &[(NaiveDateTime, usize)]) -> Result<()>
     where
         DB: DrawingBackend,
         DB::ErrorType: 'static,
@@ -87,10 +83,10 @@ pub mod plot {
         let dataset = dataset.iter().sorted_by_key(|(date, _)| date).collect_vec();
 
         let (min, max) = minmax_by_key(dataset.iter().map(|(a, b)| (a, *b)))?;
-        let (first, last): (Point<_, _>, Point<_, _>) = match dataset.as_slice() {
-            &[] => bail!("dataset empty"),
-            &[singleton] => ((*singleton).into(), (*singleton).into()),
-            &[first, .., last] => ((*first).into(), (*last).into()),
+        let (first, last): (Point<_, _>, Point<_, _>) = match *dataset.as_slice() {
+            [] => bail!("dataset empty"),
+            [singleton] => ((*singleton).into(), (*singleton).into()),
+            [first, .., last] => ((*first).into(), (*last).into()),
         };
         let coord: RangedDateTime<_> = (first.x..last.x).into(); // TODO change formatting to be less verbose so the x axis gets smaller, or use (num hours back from now)
 
@@ -115,10 +111,7 @@ pub mod plot {
             )
             .draw()?;
 
-        chart.draw_series(LineSeries::new(
-            dataset.clone().into_iter().copied(),
-            &BLUE,
-        ))?;
+        chart.draw_series(LineSeries::new(dataset.clone().into_iter().copied(), &BLUE))?;
 
         chart
             .configure_series_labels()

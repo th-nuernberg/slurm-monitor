@@ -1,3 +1,5 @@
+#![allow(mixed_script_confusables)]
+
 mod cli;
 mod data;
 mod parse;
@@ -8,10 +10,9 @@ mod render;
 use std::{
     collections::HashMap,
     fs::{self, DirEntry, FileType},
-    io::{Cursor, Read},
+    io::Cursor,
     ops::Deref,
     path::Path,
-    result::Result as StdResult,
 };
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -166,13 +167,13 @@ async fn index() -> Markup {
         h1 { "Working!" }
         h2 { "Here be monitors…" }
         @match jobcount_chart.await {
-            StdResult::Ok(data) => img src=(format!("data:image/png;base64,{data}", data=Base64::encode_string(&data))) {},
+            Ok(data) => img src=(format!("data:image/png;base64,{data}", data=Base64::encode_string(&data))) {},
             Err(e) => h3 style="color: red" { (e) },
         }
 
         //p { "DEBUG" (format!("{:?}", data.clone().map(|d| d.map(|d| &d["jobs"]))))}
         @match sacct_table().await {
-            StdResult::Ok(data) => (data),
+            Ok(data) => (data),
             Err(e) => h3 style="color: red" { (e) },
         }
     }

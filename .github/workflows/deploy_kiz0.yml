@@ -1,0 +1,37 @@
+name: Deploy to kiz0
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: kiz0 # Specify the environment name here
+
+    steps:
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.5.3
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVKEY }}
+
+      - name: Deploy to Server
+        env:
+          SERVER_USER: ${{ vars.USER }}
+          SERVER_HOST: ${{ vars.HOST }}
+        run: |
+          ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_HOST slurm-monitor/scripts/deploy.sh
+
+      # - name: Send Email on Failure
+      #   if: failure()
+      #   uses: dawidd6/action-send-mail@v3
+      #   with:
+      #     server_address: smtp.example.com
+      #     server_port: 587
+      #     username: ${{ secrets.EMAIL_USERNAME }}
+      #     password: ${{ secrets.EMAIL_PASSWORD }}
+      #     subject: "Deployment Failed"
+      #     to: ${{ vars.NOTIFICATION_EMAIL }}
+      #     from: "github-actions@example.com"
+      #     body: "The deployment failed. Please check the logs for more details."

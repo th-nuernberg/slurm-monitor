@@ -1,23 +1,105 @@
 mod cli;
 pub mod collect;
+pub mod client;
 
-use anyhow::{ensure, Context, Ok, Result};
+use anyhow::{bail, ensure, Context, Result};
+use async_std::{io::ReadExt, net::{TcpListener, TcpStream}};
 use clap::Parser as _;
 use cli::Args;
+use client::{ClientMetadata, ClientMap};
+use futures::StreamExt;
+use tracing::{error, info, instrument, span, Instrument, Level};
 use std::{
-    collections::HashMap,
-    fs::File,
-    io::Write,
-    path::Path,
-    sync::{
+    collections::HashMap, fs::File, io::Write, net::{IpAddr, SocketAddr}, path::Path, sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
-    },
-    thread::sleep,
-    time::Duration,
+    }, thread::sleep, time::Duration
 };
 
-const POLL_INTERVAL: Duration = Duration::from_secs(60);
+const TIMEOUT_POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+#[instrument]
+#[async_std::main]
+async fn main() -> Result<()> {
+    let args = Args::parse();
+    let abort_handler = AbortHandler::new()?;
+
+    register_logging(args.log_level);
+    open_database(args.database)?;
+
+    let mut connections = ClientMap::default();
+
+    let socket = TcpListener::bind((args.ip, args.port)).await?;
+
+    let listen_future = socket.incoming().for_each_concurrent(None, |stream| {
+        let connections = connections.clone();
+        async move {
+            let stream = match stream {
+                Ok(stream) => stream,
+                Err(e) => {error!(?e, "Unwrapping TcpStream failed"); return},
+            };
+            let client_addr = match stream.peer_addr() {
+                Ok(addr) => addr,
+                Err(e) => {error!(?e, "Extracting client SocketAddr failed"); return},
+            };
+
+            handle_connection(stream, client_addr).await;
+            update_last_recv(connections, client_addr).map_err(|e| error!(?e, "Could not update client metadata"));
+    }}.instrument(span!(Level::TRACE, "socket stream closure")));
+
+    /*while !abort_handler.abort() {
+        let (stream, client_addr) = socket.accept().await?;
+        let client = connections.entry(client_addr).or_insert(Client::new());
+
+        let recv_data = stream.read_to_end(buf);
+        client.update_last_received();
+
+        todo!() // read from clients, update connection map, store the data (in .json.gz or sth should be smartest)
+    }*/
+
+    Ok(())
+}
+
+fn register_logging(level: Option<Level>) -> Result<()> {
+    // a builder for `FmtSubscriber`.
+    let subscriber = tracing_subscriber::FmtSubscriber::builder()
+        // all spans/events with a level higher than TRACE (e.g, debug, info, warn, etc.)
+        // will be written to stdout.
+        .with_max_level(level.unwrap_or(Level::INFO))
+        // completes the builder.
+        .finish();
+
+    tracing::subscriber::set_global_default(subscriber)
+        .context("setting default subscriber failed")
+}
+
+#[instrument]
+fn open_database(path: &Path) -> Result<native_db::Database> {
+    
+}
+
+#[instrument]
+async fn handle_connection(mut stream: TcpStream, client_addr: SocketAddr) -> Result<()> {
+    let mut buf = Vec::<u8>::new();
+    stream.read_to_end(&mut buf).await.map(|len| {info!(len, "rx({client_addr})")}).context("reading from TcpStream")?;
+    
+    
+
+    Ok(())
+}
+
+#[instrument]
+fn update_last_recv(connections: ClientMap, client_addr: SocketAddr) -> Result<()> {
+    let mut connections =match  connections.lock()  {
+        Ok(guard) => guard,
+        Err(e) =>{ 
+        bail!("Error locking mutex: {e:#?}");},
+    };
+    connections.entry(client_addr).or_default().update_last_recv();
+
+    Ok(())
+}
+
 
 struct AbortHandler {
     atom: Arc<AtomicBool>,
@@ -40,20 +122,8 @@ impl AbortHandler {
     }
 }
 
-fn main() -> Result<()> {
-    let args = Args::parse();
-    let abort_handler = AbortHandler::new()?;
 
-    setup(&args)?;
-    while !abort_handler.abort() {
-        collect(&args.data_dir)?;
-        sleep(POLL_INTERVAL);
-    }
-
-    Ok(())
-}
-
-fn collect(data_dir: impl AsRef<Path>) -> Result<()> {
+/*fn collect(data_dir: impl AsRef<Path>) -> Result<()> {
     let dataset: HashMap<_, _> = [(
         "sacct",
         collect::collect_sacct_json().unwrap_or_else(|e| {
@@ -71,7 +141,7 @@ fn collect(data_dir: impl AsRef<Path>) -> Result<()> {
     }
 
     Ok(())
-}
+}o/
 
 fn gen_filename(what: &str) -> String {
     let datetime = chrono::Local::now().format("%Y_%m_%d__%H_%M_%S_%3f");
@@ -87,3 +157,4 @@ fn setup(args: &Args) -> Result<()> {
 
     Ok(())
 }
+*/

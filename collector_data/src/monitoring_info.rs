@@ -4,7 +4,7 @@ use nvml_wrapper::Nvml;
 
 use super::{
     job::Job,
-    cpu::{CpuInfo, CpuUsage},
+    cpu::{CpuNode, CpuUsage},
     node::{NodeInfo, NodeUsage},
     gpu::{GpuInfo, GpuUsage},
 };
@@ -42,14 +42,14 @@ impl DataObject {
 #[derive(Debug, Serialize)]
 pub struct StaticInfo {
     pub node_info: NodeInfo,
-    pub cpu_info: Vec<CpuInfo>,
+    pub cpu_info: Vec<CpuNode>,
     pub gpu_info: Vec<GpuInfo>,
 }
 
 impl StaticInfo {
     fn get_static_info(sys: &System, nvml: &Nvml) -> Result<Self, Box<dyn std::error::Error>> {
         let node_info = NodeInfo::get_static_info(&sys)?;
-        let cpu_info = CpuInfo::get_static_info()?;
+        let cpu_info = CpuNode::get_static_info()?;
         let gpu_info = GpuInfo::get_static_info(&nvml)?;
         
         Ok(StaticInfo{

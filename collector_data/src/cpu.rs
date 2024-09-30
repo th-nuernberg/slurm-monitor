@@ -3,6 +3,7 @@ use std::io::{BufReader, BufRead};
 use std::fs::File;
 use std::collections::HashMap;
 
+use color_eyre::Result;
 use serde::{Serialize, Deserialize};
 use sysinfo::{System, SystemExt,ProcessExt, Pid, PidExt};
 use derive_builder::Builder;
@@ -13,23 +14,25 @@ use super::job::Job;
 ///
 /// Static information on CPU
 ///
-#[derive(Default, Builder, Debug, Serialize, Deserialize)]
+#[derive(Default, Builder, Clone, Debug, Serialize, Deserialize)]
 #[builder(setter(into))]
-pub struct CpuInfo {
+pub struct CpuNode {
     pub id: String,
     pub core_count: u32,
 }
 
-impl CpuInfo {
-   pub fn get_static_info() -> Result<Vec<Self>, Box<dyn std::error::Error>> {
-      Ok(Self::get_cpuinfo()?)
-    }
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+pub struct Cpu {
+    nodes: Vec<CpuNode>
+}
 
-    fn get_cpuinfo() -> Result<Vec<Self>, Box<dyn std::error::Error>> {
+impl Cpu {
+
+    fn fetch_from_system() -> Result<Self> {
         let file = File::open("/proc/cpuinfo")?;
         let buf_reader = BufReader::new(file);
-        let mut builder = &mut CpuInfoBuilder::default();
-        let mut cpu_infos = Vec::<CpuInfo>::new();
+        let mut builder = &mut CpuNodeBuilder::default();
+        let mut cpu_infos = Vec::<CpuNode>::new();
 
         for line in buf_reader.lines() {
             let line = line.unwrap();
@@ -49,17 +52,17 @@ impl CpuInfo {
             };
        }
 
-       Ok(cpu_infos)
+       Ok(Cpu{nodes: cpu_infos })
    }
 }
 
 /// 
 /// Information on current CPU usage
 ///
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CpuUsage {
-    pub timestamp: String,
-    pub id: String,
+    pub timestamp: DateTime,
+    pub node_id: String,
     pub usage: f32,
     pub job_id: Option<String>,
 }
@@ -82,7 +85,7 @@ impl CpuUsage {
 
                 if !cpu_usages.contains_key(&cpu_id) {
                     cpu_usages.insert(*cpu_id, CpuUsage{
-                        timestamp: chrono::offset::Local::now().format("%F %T").to_string(),
+                        timestamp: chrono::offset::Utc::now().into(),
                         id: cpu_id.to_string(),
                         usage: 0.0,
                         job_id: Some(job.id.clone())
@@ -121,7 +124,7 @@ impl CpuUsage {
 
                 if !cpu_usages.contains_key(&cpu_id) {
                     cpu_usages.insert(*cpu_id, CpuUsage{
-                        timestamp: chrono::offset::Local::now().format("%F %T").to_string(),
+                        timestamp: chrono::offset::Utc::now().into(),
                         id: cpu_id.to_string(),
                         usage: 0.0,
                         job_id: None,

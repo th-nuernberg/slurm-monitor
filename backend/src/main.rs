@@ -1,61 +1,49 @@
 mod cli;
-pub mod collect;
 pub mod client;
 
 use anyhow::{bail, ensure, Context, Result};
-use async_std::{io::ReadExt, net::{TcpListener, TcpStream}};
+use tokio::{fs::{read_to_string, File}, io::{AsyncReadExt as _, AsyncWriteExt as _, BufWriter}, net::{TcpListener, TcpStream}, sync::{mpsc::{unbounded_channel, UnboundedSender}, Mutex}, task::JoinHandle};
 use clap::Parser as _;
 use cli::Args;
 use client::{ClientMetadata, ClientMap};
-use futures::StreamExt;
-use tracing::{error, info, instrument, span, Instrument, Level};
+use collector_data::monitoring_info::DataObject;
+use futures::{StreamExt, TryFutureExt};
+use tracing::{error, info, instrument, span, warn, Instrument, Level};
 use std::{
-    collections::HashMap, fs::File, io::Write, net::{IpAddr, SocketAddr}, path::Path, sync::{
+    collections::HashMap, future::Future, io::Write, mem::size_of, net::{IpAddr, SocketAddr}, path::Path, sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
-    }, thread::sleep, time::Duration
+        Arc, LazyLock,
+    }, time::Duration
 };
 
-const TIMEOUT_POLL_INTERVAL: Duration = Duration::from_secs(5);
+const CHECK_STALE_INTERVAL: Duration = Duration::from_secs(5);
 
 #[instrument]
-#[async_std::main]
+#[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    let data_dir = &args.data_dir;
+
+
+
+let client_map: ClientMap = Arc::new(Mutex::new(HashMap::new()));
     let abort_handler = AbortHandler::new()?;
 
-    register_logging(args.log_level);
-    open_database(args.database)?;
+    register_logging(args.log_level)?;
 
-    let mut connections = ClientMap::default();
+    let check_stale_worker = start_check_stale_worker(client_map.clone(), CHECK_STALE_INTERVAL, abort_handler.clone());
+    let (save_worker_handle, save_tx) = start_save_worker(data_dir, abort_handler.clone())?;
 
     let socket = TcpListener::bind((args.ip, args.port)).await?;
 
-    let listen_future = socket.incoming().for_each_concurrent(None, |stream| {
-        let connections = connections.clone();
-        async move {
-            let stream = match stream {
-                Ok(stream) => stream,
-                Err(e) => {error!(?e, "Unwrapping TcpStream failed"); return},
-            };
-            let client_addr = match stream.peer_addr() {
-                Ok(addr) => addr,
-                Err(e) => {error!(?e, "Extracting client SocketAddr failed"); return},
-            };
-
-            handle_connection(stream, client_addr).await;
-            update_last_recv(connections, client_addr).map_err(|e| error!(?e, "Could not update client metadata"));
-    }}.instrument(span!(Level::TRACE, "socket stream closure")));
-
-    /*while !abort_handler.abort() {
-        let (stream, client_addr) = socket.accept().await?;
-        let client = connections.entry(client_addr).or_insert(Client::new());
-
-        let recv_data = stream.read_to_end(buf);
-        client.update_last_received();
-
-        todo!() // read from clients, update connection map, store the data (in .json.gz or sth should be smartest)
-    }*/
+    while !abort_handler.abort() {
+        let connection = socket.accept().await;
+        tokio::spawn({let save_tx = save_tx.clone();
+            let client_map = client_map.clone();
+            async move {
+                handle_connection(connection, save_tx, client_map).await.map_err(|e| error!("error in handle_connection: {e:#}"))
+        }}.instrument(span!(Level::TRACE, "socket stream closure")));
+    };
 
     Ok(())
 }
@@ -74,33 +62,76 @@ fn register_logging(level: Option<Level>) -> Result<()> {
 }
 
 #[instrument]
-fn open_database(path: &Path) -> Result<native_db::Database> {
-    
+async fn start_check_stale_worker(connections: ClientMap, interval: Duration, abort_handler: AbortHandler) -> JoinHandle<()> {
+    use tokio::time::interval as new_interval;
+    let mut interval = new_interval(interval);
+    tokio::spawn(async move {
+        while abort_handler.abort() {
+            interval.tick().await;
+            
+    for (client, metadata) in connections.lock().await.iter() {
+        if metadata.has_timed_out() {
+            warn!("{client}: Client timed out (last seen {})", metadata.last_recv);
+        }
+    }
+    }})
+
 }
 
+// FIXME maybe sending raw bytes over network is unsafe (endianness and stuff). (But since this is Unicode, we should be ok?)
 #[instrument]
-async fn handle_connection(mut stream: TcpStream, client_addr: SocketAddr) -> Result<()> {
-    let mut buf = Vec::<u8>::new();
-    stream.read_to_end(&mut buf).await.map(|len| {info!(len, "rx({client_addr})")}).context("reading from TcpStream")?;
-    
-    
+async fn handle_connection(new_connection: std::io::Result<(TcpStream, SocketAddr)>, save_tx: UnboundedSender<DataObject>, mut client_map: ClientMap) -> Result<()> {
+    let (mut stream, client_addr) = new_connection?;
+
+    let mut buf = Vec::<u8>::with_capacity(size_of::<DataObject>());  // reserve space for one object
+    stream.read_to_end(&mut buf).await.map(|len: usize| {info!(len, "rx({client_addr})")}).with_context(|| format!("reading TcpStream from {client_addr}"))?;
+
+    let packet: DataObject = serde_json::from_slice(&buf)?;
+    save_tx.send(packet).with_context(||format!("trying to save packet from {client_addr}"))?;
+
+    let _ = update_last_recv(client_addr, &mut client_map).map_err(|e| error!(?e, "Could not update client metadata")).await;  // client metadata is noncritical, so we don't fail here
 
     Ok(())
 }
 
+/// currently, this saves a data object by appending it to a list inside a JSON,
+/// grouped by the date. (E.g. file 2014-09-09 holds every data object collected that day)
+/// 
+/// This needs to run in its own task, to synchronize writing to FS.
 #[instrument]
-fn update_last_recv(connections: ClientMap, client_addr: SocketAddr) -> Result<()> {
-    let mut connections =match  connections.lock()  {
-        Ok(guard) => guard,
-        Err(e) =>{ 
-        bail!("Error locking mutex: {e:#?}");},
-    };
-    connections.entry(client_addr).or_default().update_last_recv();
+fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHandle<Result<()>>, UnboundedSender<DataObject>)>{
+    let (tx, mut rx) = unbounded_channel();
+    let path = path.to_path_buf();
+
+    let handle = tokio::spawn(async move {
+    // TODO TEST (especially appending and naming behaviour)
+    while !abort_handler.abort() {
+        // TODO PERFORMANCE when we receive more data, check out channel::recv_many().
+        let Some(packet) : Option<DataObject>= rx.recv().await else {
+            return Ok(())
+        };
+        let filename = path.join(packet.time.format("%Y-%m-%d").to_string());
+    
+        let mut all_objects: Vec<DataObject> = serde_json::from_str(&read_to_string(&path).await?)?;
+        all_objects.push(packet);
+    
+        let mut writer = BufWriter::new(File::create(filename).await?);
+        writer.write_all(&serde_json::to_vec_pretty(&all_objects)?).await?
+    }
+Ok(())});
+
+    Ok((handle, tx))
+}
+
+#[instrument]
+async fn update_last_recv(client_addr: SocketAddr, client_map: &mut ClientMap) -> Result<()> {
+    let mut client_map = client_map.lock().await;
+    client_map.entry(client_addr).or_default().update_last_recv();
 
     Ok(())
 }
 
-
+#[derive(Debug, Clone)]
 struct AbortHandler {
     atom: Arc<AtomicBool>,
 }

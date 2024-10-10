@@ -6,16 +6,16 @@ edition = "2021"
 [dependencies]
 anyhow = { version = "1.0.86", features = ["backtrace"] }
 
-# "attributes" feature appearently "significantly increases compile time"
-# (see https://docs.rs/async-std/latest/async_std/#examples)
-async-std = { version = "1.12.0", features = ["attributes"] }
-
 chrono = { version = "0.4.38", features = ["serde"] }
 clap = { version = "4.5.7", features = ["derive", "wrap_help", "unicode"] }
 collector_data = { version = "0.1.0", path = "../collector_data" }
 futures = "0.3.30"
 itertools = "0.13.0"
 native_db = "0.7.1"
+serde = { version = "1.0.210", features = ["derive"] }
+serde_json = "1.0.128"
 signal-hook = "0.3.17"
+tokio = { version = "1.40.0", features = ["rt-multi-thread", "net", "io-std", "fs", "macros", "io-util", "sync", "tracing"] }
+tokio-stream = "0.1.16"
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"

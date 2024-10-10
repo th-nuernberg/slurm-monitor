@@ -1,71 +1,86 @@
-use serde::Serialize;
-use sysinfo::{System, SystemExt};
+use chrono::{DateTime, Utc};
 use nvml_wrapper::Nvml;
+use serde::{Deserialize, Serialize};
+use sysinfo::{System, SystemExt};
+
+use crate::cpu::Cpu;
 
 use super::{
-    job::Job,
     cpu::{CpuNode, CpuUsage},
-    node::{NodeInfo, NodeUsage},
     gpu::{GpuInfo, GpuUsage},
+    job::Job,
+    node::{NodeInfo, NodeUsage},
 };
 
-#[derive(Debug,Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataObject {
+    pub time: DateTime<Utc>,
     pub static_info: Option<StaticInfo>,
-    pub monitor_info: MonitorInfo
+    pub monitor_info: MonitorInfo,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataSet {}
+
 impl DataObject {
-    pub fn get_starting_info(sys: &mut System, nvml: &Nvml) -> Result<String, Box<dyn std::error::Error>>{
+    pub fn get_starting_info(
+        sys: &mut System,
+        nvml: &Nvml,
+    ) -> Result<String, Box<dyn std::error::Error>> {
         sys.refresh_all();
         let static_info = StaticInfo::get_static_info(&sys, &nvml)?;
         let monitor_info = MonitorInfo::get_monitoring_info(&sys, &nvml)?;
         let data_object = DataObject {
             static_info: Some(static_info),
-            monitor_info: monitor_info
+            monitor_info: monitor_info,
+            time: chrono::offset::Utc::now(),
         };
         Ok(serde_json::to_string(&data_object)?)
     }
 
-    pub fn get_monitoring_data(sys: &mut System, nvml: &Nvml) -> Result<String, Box<dyn std::error::Error>> {
+    pub fn get_monitoring_data(
+        sys: &mut System,
+        nvml: &Nvml,
+    ) -> Result<String, Box<dyn std::error::Error>> {
         sys.refresh_all();
         sys.refresh_all();
         let monitor_info = MonitorInfo::get_monitoring_info(&sys, &nvml)?;
         let data_object = DataObject {
             static_info: None,
-            monitor_info: monitor_info
+            monitor_info: monitor_info,
+            time: chrono::offset::Utc::now(),
         };
         Ok(serde_json::to_string(&data_object)?)
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StaticInfo {
     pub node_info: NodeInfo,
-    pub cpu_info: Vec<CpuNode>,
+    pub cpu_info: Cpu,
     pub gpu_info: Vec<GpuInfo>,
 }
 
 impl StaticInfo {
     fn get_static_info(sys: &System, nvml: &Nvml) -> Result<Self, Box<dyn std::error::Error>> {
         let node_info = NodeInfo::get_static_info(&sys)?;
-        let cpu_info = CpuNode::get_static_info()?;
+        let cpu_info = Cpu::get_static_info()?;
         let gpu_info = GpuInfo::get_static_info(&nvml)?;
-        
-        Ok(StaticInfo{
+
+        Ok(StaticInfo {
             node_info,
             cpu_info,
-            gpu_info
+            gpu_info,
         })
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MonitorInfo {
     pub jobs: Vec<Job>,
     pub node_usages: Vec<NodeUsage>,
     pub cpu_usages: Vec<CpuUsage>,
-    pub gpu_usages: Vec<GpuUsage>,
+    pub gpu_usages: Vec<GpuUsage>, // TODO most important
 }
 
 impl MonitorInfo {
@@ -86,8 +101,7 @@ impl MonitorInfo {
         cpu_usages.append(&mut CpuUsage::get_non_job_usage(&sys, &jobs)?);
         gpu_usages.append(&mut GpuUsage::get_non_job_usage(&sys, &jobs, &nvml)?);
 
-
-        Ok(MonitorInfo{
+        Ok(MonitorInfo {
             jobs: jobs,
             node_usages: node_usages,
             cpu_usages: cpu_usages,

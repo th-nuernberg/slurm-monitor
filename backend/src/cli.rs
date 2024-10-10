@@ -8,7 +8,7 @@ pub struct Args {
     pub log_level: Option<Level>,
 
     #[arg(short, long)]
-    pub database: PathBuf,
+    pub data_dir: PathBuf,
 
     #[arg(short, long, default_value = "0.0.0.0")]
     pub ip: IpAddr,

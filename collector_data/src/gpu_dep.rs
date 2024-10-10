@@ -1,9 +1,9 @@
-use std::process::Command;
 use std::collections::HashMap;
+use std::process::Command;
 
 use chrono;
-use serde::{Serialize, Deserialize};
-use sysinfo::{System, SystemExt, PidExt};
+use serde::{Deserialize, Serialize};
+use sysinfo::{PidExt, System, SystemExt};
 
 use super::job::Job;
 
@@ -15,27 +15,34 @@ pub struct GpuInfo {
 
 impl GpuInfo {
     pub fn get_static_info() -> Result<Vec<Self>, Box<dyn std::error::Error>> {
-        let output = Command::new("nvidia-smi").arg("--query-gpu=gpu_uuid,memory.total").arg("--format=csv,noheader").output()?;
+        let output = Command::new("nvidia-smi")
+            .arg("--query-gpu=gpu_uuid,memory.total")
+            .arg("--format=csv,noheader")
+            .output()?;
 
         let output_str = String::from_utf8_lossy(&output.stdout);
         let lines: Vec<&str> = output_str.lines().collect();
 
         // Tuple structur (gpu_uuid, total_mem)
-        let gpus: Vec<(String, u32)> = lines.iter().map(|line| {
-            let elements: Vec<&str> = line.split_whitespace().collect();
-            (
-                String::from(elements[0]).replace(",",""),
-                elements[1].parse::<u32>().unwrap()
+        let gpus: Vec<(String, u32)> = lines
+            .iter()
+            .map(|line| {
+                let elements: Vec<&str> = line.split_whitespace().collect();
+                (
+                    String::from(elements[0]).replace(",", ""),
+                    elements[1].parse::<u32>().unwrap(),
                 )
-        }).collect();
+            })
+            .collect();
 
-        let gpu_info = gpus.iter().map(|gpu| {
-            GpuInfo {
+        let gpu_info = gpus
+            .iter()
+            .map(|gpu| GpuInfo {
                 id: gpu.0.clone(),
                 mem_total: gpu.1,
-            }
-        }).collect();
-        
+            })
+            .collect();
+
         Ok(gpu_info)
     }
 }
@@ -50,7 +57,7 @@ pub struct GpuUsage {
 }
 
 impl GpuUsage {
-    pub fn get_usage_per_job(job: &Job) -> Result<Vec<Self>, Box <dyn std::error::Error>> {
+    pub fn get_usage_per_job(job: &Job) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
         let mut gpu_usages = HashMap::<&str, GpuUsage>::new();
 
         let gpu_usage_per_pid = Self::get_gpu_usage_per_pid()?;
@@ -59,63 +66,25 @@ impl GpuUsage {
             if let Some(gpu_usage) = gpu_usage_per_pid.get(pid) {
                 let gpu_id = &gpu_usage.0[..];
                 if !gpu_usages.contains_key(&gpu_id) {
-                    gpu_usages.insert(&gpu_id, GpuUsage{
-                        timestamp: chrono::offset::Local::now().format("%F %T").to_string(),
-                        gpu_id: gpu_id.to_string(),
-                        gpu_mem_alloc: 0,
-                        gpu_usage: 0.0,
-                        job_id: Some(job.id.clone())
-                    });
+                    gpu_usages.insert(
+                        &gpu_id,
+                        GpuUsage {
+                            timestamp: chrono::offset::Local::now().format("%F %T").to_string(),
+                            gpu_id: gpu_id.to_string(),
+                            gpu_mem_alloc: 0,
+                            gpu_usage: 0.0,
+                            job_id: Some(job.id.clone()),
+                        },
+                    );
                 }
 
                 match gpu_usages.get_mut(&gpu_id) {
                     Some(gpu) => {
                         gpu.gpu_mem_alloc += gpu_usage.1;
                         gpu.gpu_usage += gpu_usage.2;
-                    },
+                    }
                     // TODO: Error handle that one here better
-                    None => {},
-                }
-            }
-        }
-
-      Ok(gpu_usages.values().cloned().collect())
-    }
-
-    pub fn get_non_job_usage(sys: &System, jobs: &[Job]) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
-        let mut job_processes: Vec<u32> = Vec::new();
-        jobs.iter().for_each(|job| job.processes.iter().for_each(|process| job_processes.push(*process)));
-
-        let processes_wo_job: Vec<u32> = sys.processes()
-            .iter()
-            .map(|process| process.0.as_u32())
-            .filter(|process| !job_processes.contains(&process))
-            .collect();
-
-        let gpu_usage_per_pid = Self::get_gpu_usage_per_pid()?;
-        
-        let mut gpu_usages = HashMap::<&str, GpuUsage>::new();
-
-        for pid in processes_wo_job {
-            if let Some(gpu_usage) = gpu_usage_per_pid.get(&pid) {
-                let gpu_id = &gpu_usage.0[..];
-                if !gpu_usages.contains_key(&gpu_id) {
-                    gpu_usages.insert(&gpu_id, GpuUsage{
-                        timestamp: chrono::offset::Local::now().format("%F %T").to_string(),
-                        gpu_id: gpu_id.to_string(),
-                        gpu_mem_alloc: 0,
-                        gpu_usage: 0.0,
-                        job_id: None
-                    });
-                }
-
-                match gpu_usages.get_mut(&gpu_id) {
-                    Some(gpu) => {
-                        gpu.gpu_mem_alloc += gpu_usage.1;
-                        gpu.gpu_usage += gpu_usage.2;
-                    },
-                    // TODO: Error handle that one here better
-                    None => {},
+                    None => {}
                 }
             }
         }
@@ -123,11 +92,64 @@ impl GpuUsage {
         Ok(gpu_usages.values().cloned().collect())
     }
 
-    fn get_gpu_usage_per_pid() -> Result<HashMap<u32, (String, u32, f32)>, Box<dyn std::error::Error>> {
+    pub fn get_non_job_usage(
+        sys: &System,
+        jobs: &[Job],
+    ) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
+        let mut job_processes: Vec<u32> = Vec::new();
+        jobs.iter().for_each(|job| {
+            job.processes
+                .iter()
+                .for_each(|process| job_processes.push(*process))
+        });
+
+        let processes_wo_job: Vec<u32> = sys
+            .processes()
+            .iter()
+            .map(|process| process.0.as_u32())
+            .filter(|process| !job_processes.contains(&process))
+            .collect();
+
+        let gpu_usage_per_pid = Self::get_gpu_usage_per_pid()?;
+
+        let mut gpu_usages = HashMap::<&str, GpuUsage>::new();
+
+        for pid in processes_wo_job {
+            if let Some(gpu_usage) = gpu_usage_per_pid.get(&pid) {
+                let gpu_id = &gpu_usage.0[..];
+                if !gpu_usages.contains_key(&gpu_id) {
+                    gpu_usages.insert(
+                        &gpu_id,
+                        GpuUsage {
+                            timestamp: chrono::offset::Local::now().format("%F %T").to_string(),
+                            gpu_id: gpu_id.to_string(),
+                            gpu_mem_alloc: 0,
+                            gpu_usage: 0.0,
+                            job_id: None,
+                        },
+                    );
+                }
+
+                match gpu_usages.get_mut(&gpu_id) {
+                    Some(gpu) => {
+                        gpu.gpu_mem_alloc += gpu_usage.1;
+                        gpu.gpu_usage += gpu_usage.2;
+                    }
+                    // TODO: Error handle that one here better
+                    None => {}
+                }
+            }
+        }
+
+        Ok(gpu_usages.values().cloned().collect())
+    }
+
+    fn get_gpu_usage_per_pid(
+    ) -> Result<HashMap<u32, (String, u32, f32)>, Box<dyn std::error::Error>> {
         let output_per_pid = Command::new("nvidia-smi")
             .arg("--query-compute-apps=pid,gpu_uuid,used_gpu_memory") // for computing
             //process
-//            .arg("--query-accounted-apps=pid,gpu_uuid,mem_util,gpu_util")
+            //            .arg("--query-accounted-apps=pid,gpu_uuid,mem_util,gpu_util")
             .arg("--format=csv,noheader")
             .output()?;
         //let output_whole = Command::new("nvidia-smi").arg("--query-gpu=gpu_uuid,utilization.gpu,memory.used").arg("--format=csv,noheader").output().expect("nvidia-smi cannot execute");
@@ -142,14 +164,15 @@ impl GpuUsage {
             .map(|line| {
                 let elements: Vec<&str> = line.split_whitespace().collect();
                 (
-                    elements[0].replace(",","").parse::<u32>().unwrap(),
+                    elements[0].replace(",", "").parse::<u32>().unwrap(),
                     (
                         elements[1].replace(",", "").to_string(),
-                        elements[2].replace(",", "").parse::<u32>().unwrap(),//elements[2].parse::<u32>().unwrap(),
-                        0.0//elements[2].parse::<f32>().unwrap()
-                        )
-                    )
-                }).collect();
+                        elements[2].replace(",", "").parse::<u32>().unwrap(), //elements[2].parse::<u32>().unwrap(),
+                        0.0, //elements[2].parse::<f32>().unwrap()
+                    ),
+                )
+            })
+            .collect();
 
         // TODO: ooff
         Ok(gpu_usage_per_pid)

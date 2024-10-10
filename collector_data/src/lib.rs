@@ -19,14 +19,15 @@
 
 //     consumedenergy: f64,
 // }
+pub mod cpu;
+pub mod gpu;
 pub mod gpu_dep;
 pub mod job;
-pub mod cpu;
-pub mod node;
-pub mod gpu;
+pub mod misc;
 pub mod monitoring_info;
+pub mod node;
 
-use std::time::Duration;
+use chrono::Duration;
 
-pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(30);
-pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+pub const DEFAULT_INTERVAL: Duration = Duration::seconds(30);
+pub const DEFAULT_TIMEOUT: Duration = Duration::seconds(30);

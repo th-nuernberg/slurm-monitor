@@ -22,8 +22,9 @@ fn main() -> Result<()> {
     let Settings {
         server_ip,
         server_socket: server_port,
-        time_interval,
+        tx_interval,
     } = read_config()?;
+    let tx_interval = tx_interval.unwrap();
     let server_addr = SocketAddr::new(server_ip, server_port);
 
     let mut sys = System::new_all();
@@ -33,8 +34,7 @@ fn main() -> Result<()> {
 
     loop {
         send_monitoring_data(server_addr, &mut sys, &nvml)?;
-
-        thread::sleep(Duration::from_secs(time_interval.into()));
+        thread::sleep(tx_interval.to_std()?);
     }
 }
 

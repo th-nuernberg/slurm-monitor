@@ -13,3 +13,4 @@ nvml-wrapper = "0.10.0"
 serde = { version = "1.0.209", features = ["derive"] }
 collector_data = { version = "0.1.0", path = "../collector_data" }
 sysinfo = "0.29.8"
+itertools = "0.13.0"

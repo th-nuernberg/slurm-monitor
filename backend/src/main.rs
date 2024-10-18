@@ -1,13 +1,13 @@
 mod cli;
 pub mod client;
 
-use anyhow::{bail, ensure, Context, Result};
-use tokio::{fs::{read_to_string, File}, io::{AsyncReadExt as _, AsyncWriteExt as _, BufWriter}, net::{TcpListener, TcpStream}, sync::{mpsc::{unbounded_channel, UnboundedSender}, Mutex}, task::JoinHandle};
+use anyhow::{anyhow, bail, ensure, Context, Error, Result};
+use tokio::{fs::{read_to_string, File}, io::{AsyncReadExt as _, AsyncWriteExt as _, BufWriter}, net::{TcpListener, TcpStream}, sync::{mpsc::{unbounded_channel, UnboundedSender}, Mutex}, task::{JoinError, JoinHandle}};
 use clap::Parser as _;
 use cli::Args;
 use client::{ClientMetadata, ClientMap};
 use collector_data::monitoring_info::DataObject;
-use futures::{StreamExt, TryFutureExt};
+use futures::{join, StreamExt, TryFutureExt};
 use tracing::{error, info, instrument, span, warn, Instrument, Level};
 use std::{
     collections::HashMap, future::Future, io::Write, mem::size_of, net::{IpAddr, SocketAddr}, path::Path, sync::{
@@ -31,19 +31,30 @@ let client_map: ClientMap = Arc::new(Mutex::new(HashMap::new()));
 
     register_logging(args.log_level)?;
 
-    let check_stale_worker = start_check_stale_worker(client_map.clone(), CHECK_STALE_INTERVAL, abort_handler.clone());
+    let check_stale_worker_handle = start_check_stale_worker(client_map.clone(), CHECK_STALE_INTERVAL, abort_handler.clone());
     let (save_worker_handle, save_tx) = start_save_worker(data_dir, abort_handler.clone())?;
 
     let socket = TcpListener::bind((args.ip, args.port)).await?;
+    let socket_stream = futures::stream::poll_fn(move |ctx| socket.poll_accept(ctx).map(Option::from)); // TODO (maybe) find out if the closures context arg is relevant to us (and what it means in general)
+    let (mut socket_stream, socket_stream_abort_handler) = futures::stream::abortable(socket_stream);
 
     while !abort_handler.abort() {
-        let connection = socket.accept().await;
-        tokio::spawn({let save_tx = save_tx.clone();
+        let Some(connection) = socket_stream.next().await else {
+            eprintln!("Collector sockend closed; exiting…");
+            break;
+        };
+        tokio::spawn({
+            let save_tx = save_tx.clone();
             let client_map = client_map.clone();
             async move {
                 handle_connection(connection, save_tx, client_map).await.map_err(|e| error!("error in handle_connection: {e:#}"))
         }}.instrument(span!(Level::TRACE, "socket stream closure")));
     };
+    socket_stream_abort_handler.abort();
+
+    // TODO into scope guard or, better, object with drop()
+    let _ = join!(save_worker_handle).0.map_err(anyhow::Error::new).and_then(|x| x)?; // wait for save worker, unwrap if ok (flatten())
+
 
     Ok(())
 }
@@ -69,13 +80,13 @@ async fn start_check_stale_worker(connections: ClientMap, interval: Duration, ab
         while abort_handler.abort() {
             interval.tick().await;
             
-    for (client, metadata) in connections.lock().await.iter() {
-        if metadata.has_timed_out() {
-            warn!("{client}: Client timed out (last seen {})", metadata.last_recv);
+            for (client, metadata) in connections.lock().await.iter() {
+                if metadata.has_timed_out() {
+                    warn!("{client}: Client timed out (last seen {})", metadata.last_recv);
+                }
+            }
         }
-    }
-    }})
-
+    })
 }
 
 // FIXME maybe sending raw bytes over network is unsafe (endianness and stuff). (But since this is Unicode, we should be ok?)

@@ -1,5 +1,5 @@
+use chrono::{DateTime, Duration, Local};
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
-use chrono::{Duration, DateTime, Local};
 use tokio::sync::Mutex;
 
 use collector_data::{DEFAULT_INTERVAL, DEFAULT_TIMEOUT};
@@ -47,8 +47,8 @@ impl Default for ClientMetadata {
 #[cfg(test)]
 mod test {
 
-use chrono::{Duration, DateTime, Local};
     use anyhow::Result;
+    use chrono::{DateTime, Duration, Local};
 
     use super::*;
 
@@ -57,7 +57,7 @@ use chrono::{Duration, DateTime, Local};
         let client = ClientMetadata {
             last_recv: Local::now() - Duration::seconds(65),
             interval: Duration::seconds(30),
-            timeout: Duration::seconds(30)
+            timeout: Duration::seconds(30),
         };
         assert!(client.has_timed_out());
         Ok(())
@@ -68,7 +68,7 @@ use chrono::{Duration, DateTime, Local};
         let mut client = ClientMetadata {
             last_recv: Local::now() - Duration::seconds(20),
             interval: Duration::seconds(30),
-            timeout: Duration::seconds(30)
+            timeout: Duration::seconds(30),
         };
         assert!(!client.has_timed_out());
         client.last_recv = Local::now() - Duration::seconds(40);

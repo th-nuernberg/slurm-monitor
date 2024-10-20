@@ -8,17 +8,10 @@ use client::{ClientMap, ClientMetadata};
 use collector_data::monitoring_info::DataObject;
 use futures::{join, StreamExt, TryFutureExt};
 use std::{
-    collections::HashMap,
-    future::Future,
-    io::Write,
-    mem::size_of,
-    net::{IpAddr, SocketAddr},
-    path::Path,
-    sync::{
+    collections::HashMap, future::Future, io::Write, mem::size_of, net::{IpAddr, SocketAddr}, ops::Deref as _, path::Path, sync::{
         atomic::{AtomicBool, Ordering},
         Arc, LazyLock,
-    },
-    time::Duration,
+    }, time::Duration
 };
 use tokio::{
     fs::{read_to_string, File},
@@ -31,7 +24,7 @@ use tokio::{
     task::{JoinError, JoinHandle},
     time::sleep,
 };
-use tracing::{error, info, instrument, span, trace, warn, Instrument, Level};
+use tracing::{error, field, info, instrument, span, trace, warn, Instrument, Level};
 
 const CHECK_STALE_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -143,7 +136,7 @@ async fn start_check_stale_worker(
 }
 
 // FIXME maybe sending raw bytes over network is unsafe (endianness and stuff). (But since this is Unicode, we should be ok?)
-#[instrument]
+#[instrument(skip(save_tx, client_map))]
 async fn handle_connection(
     new_connection: std::io::Result<(TcpStream, SocketAddr)>,
     save_tx: UnboundedSender<DataObject>,
@@ -174,7 +167,6 @@ async fn handle_connection(
 /// grouped by the date. (E.g. file 2014-09-09 holds every data object collected that day)
 ///
 /// This needs to run in its own task, to synchronize writing to FS.
-#[instrument]
 fn start_save_worker(
     path: &Path,
     abort_handler: AbortHandler,
@@ -182,9 +174,12 @@ fn start_save_worker(
     let (tx, mut rx) = unbounded_channel();
     let path = path.to_path_buf();
 
+    let span = span!(Level::DEBUG, "save_worker inner loop", measured_when = ?field::Empty, target_file = field::Empty, );
+
     let handle = tokio::spawn(async move {
         // TODO TEST (especially appending and naming behaviour)
         while !abort_handler.abort() {
+            let _enter = span.enter();
             // TODO PERFORMANCE when we receive more data, check out channel::recv_many().
             // TODO use Abortable and make this simpler snippet work again
             /*let Some(packet): Option<DataObject> = rx.recv().await else {
@@ -198,7 +193,10 @@ fn start_save_worker(
                     continue;
                 }
             };
+            span.record("measured_when", format!("{:?}", packet.time));
+
             let filename = path.join(packet.time.format("%Y-%m-%d").to_string());
+            span.record("target_file", filename.to_string_lossy().deref());
 
             let mut all_objects: Vec<DataObject> =
                 serde_json::from_str(&read_to_string(&path).await?)?;

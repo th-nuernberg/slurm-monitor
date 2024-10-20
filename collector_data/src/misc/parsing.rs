@@ -7,8 +7,8 @@ pub mod duration {
     };
     use itertools::Itertools as _;
 
-    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize)] 
-    #[serde(try_from="&str", into="String")]
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+    #[serde(try_from = "&str", into = "String")]
     pub struct DurationWrapper(pub chrono::Duration);
     use chrono::Duration;
     use serde::{Deserialize, Serialize};
@@ -45,10 +45,9 @@ pub mod duration {
         }
     }
 
-
     impl Deref for DurationWrapper {
         type Target = Duration;
-    
+
         fn deref(&self) -> &Self::Target {
             &self.0
         }
@@ -65,14 +64,25 @@ mod test {
 
     #[test]
     fn Duration__try_from_string() {
-        assert_eq!(Duration::try_from("35s").unwrap(), Duration(chrono::Duration::seconds(35)));
-        assert_eq!(Duration::try_from("27m").unwrap(), Duration(chrono::Duration::minutes(27)));
-        assert_eq!(Duration::try_from("3h").unwrap(), Duration(chrono::Duration::hours(3)));
-        assert_eq!(Duration::try_from("500ms").unwrap(), Duration(chrono::Duration::milliseconds(500)));
+        assert_eq!(
+            Duration::try_from("35s").unwrap(),
+            Duration(chrono::Duration::seconds(35))
+        );
+        assert_eq!(
+            Duration::try_from("27m").unwrap(),
+            Duration(chrono::Duration::minutes(27))
+        );
+        assert_eq!(
+            Duration::try_from("3h").unwrap(),
+            Duration(chrono::Duration::hours(3))
+        );
+        assert_eq!(
+            Duration::try_from("500ms").unwrap(),
+            Duration(chrono::Duration::milliseconds(500))
+        );
 
         assert!(Duration::try_from("500").is_err());
         assert!(Duration::try_from("400k").is_err());
         assert!(Duration::try_from("400jkl").is_err());
-
     }
 }

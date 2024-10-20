@@ -4,8 +4,9 @@ use collector_data::{misc::parsing::Duration, DEFAULT_INTERVAL};
 use config::{Config, ConfigError, Environment, File};
 use serde::Deserialize;
 
+// TODO put into collector_data (and backend too)
 const DEFAULT_SERVER_IP: &str = "127.0.0.1";
-const DEFAULT_SERVER_SOCKET: u16 = 6430;
+const DEFAULT_SERVER_PORT: u16 = 19912;
 
 #[derive(Debug, Deserialize)]
 pub struct Settings {
@@ -20,9 +21,9 @@ impl Settings {
 
         let builder = Config::builder()
             .set_default("server_ip", DEFAULT_SERVER_IP.to_string())?
-            .set_default("server_socket", DEFAULT_SERVER_SOCKET.to_string())?
-            .add_source(File::with_name("config"))
-            .add_source(File::with_name(&format!("config/{}", run_mode)))
+            .set_default("server_port", DEFAULT_SERVER_PORT.to_string())?
+            //.add_source(File::with_name("config"))
+            //.add_source(File::with_name(&format!("config/{}", run_mode)))
             .add_source(Environment::with_prefix("app"))
             .build()?;
 

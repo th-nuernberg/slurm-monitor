@@ -8,10 +8,18 @@ use client::{ClientMap, ClientMetadata};
 use collector_data::monitoring_info::DataObject;
 use futures::{join, StreamExt, TryFutureExt};
 use std::{
-    collections::HashMap, future::Future, io::Write, mem::size_of, net::{IpAddr, SocketAddr}, ops::Deref as _, path::Path, sync::{
+    collections::HashMap,
+    future::Future,
+    io::Write,
+    mem::size_of,
+    net::{IpAddr, SocketAddr},
+    ops::Deref as _,
+    path::Path,
+    sync::{
         atomic::{AtomicBool, Ordering},
         Arc, LazyLock,
-    }, time::Duration
+    },
+    time::Duration,
 };
 use tokio::{
     fs::{read_to_string, File},
@@ -176,6 +184,7 @@ fn start_save_worker(
 
     let span = span!(Level::DEBUG, "save_worker inner loop", measured_when = ?field::Empty, target_file = field::Empty, );
 
+    // TODO (important) appearently, errors from the while loop are not correctly propagated and/or shown
     let handle = tokio::spawn(async move {
         // TODO TEST (especially appending and naming behaviour)
         while !abort_handler.abort() {
@@ -187,19 +196,35 @@ fn start_save_worker(
             };*/
             let packet: DataObject = match rx.try_recv() {
                 Ok(packet) => packet,
-                Err(TryRecvError::Disconnected) => break,
+                Err(TryRecvError::Disconnected) => {
+                    trace!("try_recv(): Disconnected => break out of loop");
+                    break;
+                }
                 Err(TryRecvError::Empty) => {
+                    trace!("try_recv(): Empty => sleep 100ms");
                     sleep(Duration::from_millis(100)).await;
                     continue;
                 }
             };
+
+            trace!("try_recv(): Ok(packet) => process…");
             span.record("measured_when", format!("{:?}", packet.time));
 
             let filename = path.join(packet.time.format("%Y-%m-%d").to_string());
             span.record("target_file", filename.to_string_lossy().deref());
 
-            let mut all_objects: Vec<DataObject> =
-                serde_json::from_str(&read_to_string(&path).await?)?;
+            let mut all_objects: Vec<DataObject> = {
+                let mut output_file = File::options()
+                    .create(true)
+                    .read(true)
+                    .write(false)
+                    .open(&path)
+                    .await?;
+
+                    let mut buf = String::new();
+                    output_file.read_to_string(&mut buf).await?;
+                    serde_json::from_str(&buf)?
+            };
             all_objects.push(packet);
 
             let mut writer = BufWriter::new(File::create(filename).await?);

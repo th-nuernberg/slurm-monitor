@@ -20,8 +20,8 @@ fn main() -> Result<()> {
 
     // Load configuration
     let Settings {
-        server_ip,
-        server_socket: server_port,
+        server_addr: server_ip,
+        server_port,
         tx_interval,
     } = read_config()?;
     let tx_interval = tx_interval.unwrap();

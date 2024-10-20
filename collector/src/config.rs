@@ -10,11 +10,13 @@ const DEFAULT_SERVER_PORT: u16 = 19912;
 
 #[derive(Debug, Deserialize)]
 pub struct Settings {
-    pub server_ip: IpAddr,
-    pub server_socket: u16,
+    pub server_addr: IpAddr,
+    pub server_port: u16,
     pub tx_interval: Option<Duration>,
 }
 
+// TODO (important) remove this messy config crate, just use clap
+// TODO (important) accept hostname (kiz0 e.g.)
 impl Settings {
     pub fn new() -> Result<Self, ConfigError> {
         let run_mode = env::var("RUN_MODE").unwrap_or_else(|_| "default".into());
@@ -24,7 +26,7 @@ impl Settings {
             .set_default("server_port", DEFAULT_SERVER_PORT.to_string())?
             //.add_source(File::with_name("config"))
             //.add_source(File::with_name(&format!("config/{}", run_mode)))
-            .add_source(Environment::with_prefix("app"))
+            .add_source(Environment::default())
             .build()?;
 
         let mut settings = builder.try_deserialize::<Self>()?;

@@ -1,7 +1,6 @@
-use std::io::{self, Write};
-use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream};
+use std::io::Write;
+use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::thread;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::Local;

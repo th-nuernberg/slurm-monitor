@@ -8,15 +8,15 @@ pub mod duration {
     use itertools::Itertools as _;
 
     #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
-    #[serde(try_from = "&str", into = "String")]
+    #[serde(try_from = "String", into = "String")]
     pub struct DurationWrapper(pub chrono::Duration);
     use chrono::Duration;
-    use serde::{Deserialize, Serialize};
+    use serde::Deserialize;
 
-    impl TryFrom<&str> for DurationWrapper {
+    impl TryFrom<String> for DurationWrapper {
         type Error = color_eyre::Report;
 
-        fn try_from(value: &str) -> Result<Self, Self::Error> {
+        fn try_from(value: String) -> Result<Self, Self::Error> {
             let chars = value.chars().collect_vec();
             let (time, time_str, parse_fn): (&[char], &str, Box<dyn Fn(i64) -> Option<Duration>>) =
                 match chars.as_slice() {
@@ -60,7 +60,6 @@ pub use duration::DurationWrapper as Duration;
 #[cfg(test)]
 mod test {
     use super::*;
-    use color_eyre::Result;
 
     #[test]
     fn Duration__try_from_string() {

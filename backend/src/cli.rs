@@ -1,7 +1,4 @@
-use std::{
-    net::{IpAddr, SocketAddr, SocketAddrV4},
-    path::PathBuf,
-};
+use std::{net::IpAddr, path::PathBuf};
 
 use clap::Parser;
 use tracing::Level;

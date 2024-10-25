@@ -1,7 +1,7 @@
-use std::{env, net::IpAddr};
+use std::net::IpAddr;
 
 use collector_data::{misc::parsing::Duration, DEFAULT_INTERVAL};
-use config::{Config, ConfigError, Environment, File};
+use config::{Config, ConfigError, Environment};
 use serde::Deserialize;
 
 // TODO put into collector_data (and backend too)
@@ -19,7 +19,7 @@ pub struct Settings {
 // TODO (important) accept hostname (kiz0 e.g.)
 impl Settings {
     pub fn new() -> Result<Self, ConfigError> {
-        let run_mode = env::var("RUN_MODE").unwrap_or_else(|_| "default".into());
+        //let run_mode = env::var("RUN_MODE").unwrap_or_else(|_| "default".into());
 
         let builder = Config::builder()
             .set_default("server_ip", DEFAULT_SERVER_IP.to_string())?

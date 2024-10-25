@@ -1,23 +1,19 @@
 mod cli;
 pub mod client;
 
-use anyhow::{anyhow, bail, ensure, Context, Error, Result};
+use anyhow::{anyhow, bail, Context, Error, Result};
 use clap::Parser as _;
 use cli::Args;
-use client::{ClientMap, ClientMetadata};
+use client::ClientMap;
 use collector_data::monitoring_info::DataObject;
-use futures::{join, StreamExt, TryFutureExt};
+use futures::{join, pin_mut, StreamExt as _, TryFutureExt as _};
 use std::{
     collections::HashMap,
-    future::Future,
-    io::Write,
-    mem::size_of,
-    net::{IpAddr, SocketAddr},
-    ops::Deref as _,
+    net::SocketAddr,
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, LazyLock,
+        Arc,
     },
     time::Duration,
 };
@@ -29,14 +25,16 @@ use tokio::{
         mpsc::{error::TryRecvError, unbounded_channel, UnboundedSender},
         Mutex,
     },
-    task::{JoinError, JoinHandle},
+    task::JoinHandle,
     time::sleep,
 };
-use tracing::{error, field, info, instrument, span, trace, warn, Instrument, Level};
+use tracing::{
+    debug, debug_span, error, field, info, instrument, span, trace, warn, Instrument, Level, Span,
+};
 
 const CHECK_STALE_INTERVAL: Duration = Duration::from_secs(5);
 
-#[instrument]
+//#[instrument]
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -47,7 +45,7 @@ async fn main() -> Result<()> {
 
     register_logging(args.log_level)?;
 
-    let check_stale_worker_handle = start_check_stale_worker(
+    let _check_stale_worker_handle = start_check_stale_worker(
         client_map.clone(),
         CHECK_STALE_INTERVAL,
         abort_handler.clone(),
@@ -66,7 +64,7 @@ async fn main() -> Result<()> {
             // TODO prob. duplicate to `abortable()`
             while !abort_handler.abort() {
                 let Some(connection) = socket_stream.next().await else {
-                    eprintln!("Collector sockend closed; exiting…");
+                    eprintln!("Collector socket closed; exiting…");
                     break;
                 };
                 tokio::spawn(
@@ -90,15 +88,20 @@ async fn main() -> Result<()> {
     // wait for abort
     while !abort_handler.abort() {
         trace!("waiting for abort_handler");
+
+        // if save_worker crashed (or finished, but usually crashed) for some reason, end prematurely
+        if save_worker_handle.is_finished() {
+            break;
+        }
+
         sleep(Duration::from_millis(100)).await;
     }
 
     // TODO into scope guard or, better, object with `drop()`
     //
-    // we only join on save_worker, because checking for stale clients is irrelevant at this
-    // point, and we explicitly want the `accept()` loop to quit. Downside is hypothetical
-    // abortion of open connections, but that would require using the `JoinHandle`s from the
-    // nested `spawn()`
+    // we only join on save_worker, because checking for stale clients is irrelevant at this point, and we explicitly
+    // want the `accept()` loop to quit. Downside is hypothetical abortion of open connections, but that would require
+    // using the `JoinHandle`s from the nested `spawn()`
     let _ = join!(save_worker_handle)
         .0
         .map_err(anyhow::Error::new)
@@ -187,69 +190,99 @@ fn start_save_worker(
     let (tx, mut rx) = unbounded_channel();
     let path = path.to_path_buf();
 
-    let span = span!(Level::DEBUG, "save_worker inner loop", measured_when = ?field::Empty, target_file = field::Empty, );
-
-    // TODO (important) appearently, errors from the while loop are not correctly propagated and/or shown
     let handle = tokio::spawn(async move {
         // TODO TEST (especially appending and naming behaviour)
+        // TODO profile & write timings to logs
         while !abort_handler.abort() {
-            let _enter = span.enter();
-            // TODO PERFORMANCE when we receive more data, check out channel::recv_many().
-            // TODO use Abortable and make this simpler snippet work again
-            /*let Some(packet): Option<DataObject> = rx.recv().await else {
-                return Ok(());
-            };*/
-            let packet: DataObject = match rx.try_recv() {
-                Ok(packet) => packet,
-                Err(TryRecvError::Disconnected) => {
-                    trace!("try_recv(): Disconnected => break out of loop");
-                    break;
-                }
-                Err(TryRecvError::Empty) => {
-                    trace!("try_recv(): Empty => sleep 100ms");
-                    sleep(Duration::from_millis(100)).await;
-                    continue;
-                }
-            };
+            // we need the async block, so we can correctly instrument with a span later. Using Span::enter
+            // doesn't work with async.
+            async {
+                // TODO PERFORMANCE when we receive more data, check out channel::recv_many().
+                // TODO use Abortable and make this simpler snippet work again
+                /*let Some(packet): Option<DataObject> = rx.recv().await else {
+                    return Ok(());
+                };*/
+                let packet: DataObject = match rx.try_recv() {
+                    Ok(packet) => packet,
+                    Err(e @ TryRecvError::Disconnected) => {
+                        info!("save_channel.try_recv(): Disconnected => break out of loop");
+                        return Err(Error::new(e).context("save_channel"));
+                    }
+                    Err(TryRecvError::Empty) => {
+                        trace!("save_channel.try_recv(): Empty => sleep 100ms");
+                        sleep(Duration::from_millis(100)).await;
+                        return Ok(()); // == continue;
+                    }
+                };
 
-            trace!("try_recv(): Ok(packet) => process…");
-            span.record("measured_when", format!("{:?}", packet.time));
+                trace!("try_recv(): Ok(packet) => process…");
+                Span::current().record("measured_when", format!("{:?}", packet.time));
 
-            let filename = path.join(packet.time.format("%Y-%m-%d.json").to_string());
-            span.record("target_file", filename.to_string_lossy().deref());
+                let filename = path.join(packet.time.format("%Y-%m-%d.json").to_string());
+                Span::current().record("target_file", filename.to_string_lossy().as_ref());
 
-            let mut all_objects: Vec<DataObject> = if filename.exists() {
-                if !filename.is_file() {
-                    error!("WTF. Don't go creating non-regulare file objects like {}. Failed to save JSON, exiting…", filename.to_string_lossy());
-                    bail!(
-                        "tried to save to {} but it was a non-regular file",
+                // TODO if file exists but some parsing/reading error occurs, append digit and try again.
+                let mut all_objects: Vec<DataObject> = if filename.exists() {
+                    let stream = tokio_stream::iter(0_usize..).then(|counter| {
+                        let filename = filename.clone();
+                        async move {
+                            let filename = if counter == 0 {
+                                filename
+                            } else {
+                                filename.with_file_name(format!("{}.{counter}.json", filename.file_stem().ok_or(anyhow!("no file stem on {filename:?}? wtf"))?.to_string_lossy()))
+                            };
+
+                            if filename.exists() && !filename.is_file() {
+                                error!("WTF. Don't go creating non-regulare file objects like {}. Failed to save JSON, exiting…", filename.to_string_lossy());
+                                bail!(
+                                    "tried to save to {} but it was a non-regular file",
+                                    filename.to_string_lossy()
+                                );
+                            }
+                            Ok(serde_json::from_str::<Vec<DataObject>>(
+                                &read_to_string(&filename)
+                                    .await
+                                    .context("reading DataObject JSON file")?,
+                            )
+                            .context("parsing DataObject JSON (from file)")?)
+                        }
+                    }).filter_map(|result| std::future::ready(match result {
+                        Ok(val) => Some(val),
+                        Err(e) => {
+                            warn!("{e:#}: Save file defective, skipping to next…");
+                            None
+                        },
+                    }));
+
+                    pin_mut!(stream);
+                    stream.next().await.ok_or_else(|| anyhow!("Couldn't find a suitable save file (or fallback thereof).\n\n…FML dafuq?!"))?
+                } else {
+                    info!(
+                        "{} didn't exist when saving, creating.",
                         filename.to_string_lossy()
                     );
-                }
-                serde_json::from_str(
-                    &read_to_string(&filename)
-                        .await
-                        .context("reading DataObject JSON file")?,
-                )
-                .context("parsing DataObject JSON (from file)")?
-            } else {
-                info!(
-                    "{} didn't exist when saving, creating.",
-                    filename.to_string_lossy()
-                );
-                Vec::default()
-            };
-            all_objects.push(packet);
+                    Vec::default()
+                };
+                all_objects.push(packet);
 
-            let mut writer = BufWriter::new(
-                File::create(filename)
+                let mut writer = 
+                    File::create(filename)
+                        .await
+                        .context("opening DataObject JSON (2nd time, for writing)")?;
+                writer
+                    .write_all(&serde_json::to_vec_pretty(&all_objects)?)
                     .await
-                    .context("opening DataObject JSON (2nd time, for writing)")?,
-            );
-            writer
-                .write_all(&serde_json::to_vec_pretty(&all_objects)?)
-                .await
-                .context("writing (updated) DataObject JSON")?
+                    .context("writing (updated) DataObject JSON")?;
+                
+                // TODO rust fs is _the horror_. build wrapper to ensure these shutdown instructions are always honed.
+                writer.flush().await?;
+                writer.shutdown().await?;
+
+
+                debug!("successfully updated DataObjects");
+                Ok(())
+            }.instrument( debug_span!("save_worker inner loop",
+            measured_when = field::Empty, target_file = field::Empty)).await?
         }
         Ok(())
     });

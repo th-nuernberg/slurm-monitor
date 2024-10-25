@@ -6,7 +6,7 @@ use sysinfo::{System, SystemExt};
 use crate::cpu::Cpu;
 
 use super::{
-    cpu::{CpuNode, CpuUsage},
+    cpu::CpuUsage,
     gpu::{GpuInfo, GpuUsage},
     job::Job,
     node::{NodeInfo, NodeUsage},

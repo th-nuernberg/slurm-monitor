@@ -48,7 +48,7 @@ impl Default for ClientMetadata {
 mod test {
 
     use anyhow::Result;
-    use chrono::{DateTime, Duration, Local};
+    use chrono::{Duration, Local};
 
     use super::*;
 

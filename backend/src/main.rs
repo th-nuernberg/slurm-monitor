@@ -2,10 +2,12 @@ mod cli;
 pub mod client;
 
 use anyhow::{anyhow, bail, Context, Error, Result};
+use async_compression::tokio::write::BrotliEncoder;
 use clap::Parser as _;
 use cli::Args;
 use client::ClientMap;
 use collector_data::monitoring_info::DataObject;
+use flate2::read::DeflateDecoder;
 use futures::{join, pin_mut, StreamExt as _, TryFutureExt as _};
 use std::{
     collections::HashMap,
@@ -19,7 +21,7 @@ use std::{
 };
 use tokio::{
     fs::{read_to_string, File},
-    io::{AsyncReadExt as _, AsyncWriteExt as _, BufWriter},
+    io::{AsyncReadExt as _, AsyncWriteExt as _, BufReader, BufWriter},
     net::{TcpListener, TcpStream},
     sync::{
         mpsc::{error::TryRecvError, unbounded_channel, UnboundedSender},
@@ -31,6 +33,7 @@ use tokio::{
 use tracing::{debug, debug_span, error, field, info, instrument, span, trace, warn, Instrument, Level, Span};
 
 const CHECK_STALE_INTERVAL: Duration = Duration::from_secs(5);
+const SAVE_FILE_EXT: &str = "json.br";
 
 //#[instrument]
 #[tokio::main]
@@ -194,7 +197,7 @@ fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHa
                 trace!("try_recv(): Ok(packet) => process…");
                 Span::current().record("measured_when", format!("{:?}", packet.time));
 
-                let filename = path.join(packet.time.format("%Y-%m-%d.json").to_string());
+                let filename = path.join(format!("{date}.{SAVE_FILE_EXT}", date = packet.time.format("%Y-%m-%d").to_string()));
                 Span::current().record("target_file", filename.to_string_lossy().as_ref());
 
                 // TODO if file exists but some parsing/reading error occurs, append digit and try again.
@@ -207,7 +210,7 @@ fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHa
                                     filename
                                 } else {
                                     filename.with_file_name(format!(
-                                        "{}.{counter}.json",
+                                        "{}.{counter}.{SAVE_FILE_EXT}",
                                         filename.file_stem().ok_or(anyhow!("no file stem on {filename:?}? wtf"))?.to_string_lossy()
                                     ))
                                 };
@@ -224,10 +227,12 @@ fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHa
                                     );
                                     bail!("tried to save to {} but it was a non-regular file", filename.to_string_lossy());
                                 }
-                                Ok(
-                                    serde_json::from_str::<Vec<DataObject>>(&read_to_string(&filename).await.context("reading DataObject JSON file")?)
-                                        .context("parsing DataObject JSON (from file)")?,
-                                )
+
+                                let mut brotli = async_compression::tokio::bufread::BrotliDecoder::new(BufReader::new(File::open(&filename).await?));
+                                let mut buf = String::new();
+                                brotli.read_to_string(&mut buf).await.context("reading DataObject JSON file")?;
+
+                                Ok(serde_json::from_str::<Vec<DataObject>>(&buf).context("parsing DataObject JSON (from file)")?)
                             }
                         })
                         .filter_map(|result| {
@@ -251,13 +256,13 @@ fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHa
                 };
                 all_objects.push(packet);
 
-                let mut writer = File::create(filename).await.context("opening DataObject JSON (2nd time, for writing)")?;
+                let writer = File::create(filename).await.context("opening DataObject JSON (2nd time, for writing)")?;
+                let mut writer = BrotliEncoder::with_quality(BufWriter::new(writer), async_compression::Level::Precise(9));
                 writer
                     .write_all(&serde_json::to_vec_pretty(&all_objects)?)
                     .await
                     .context("writing (updated) DataObject JSON")?;
-
-                // TODO rust fs is _the horror_. build wrapper to ensure these shutdown instructions are always honed.
+                // TODO tokio fs is _the horror_, BufWrite drops remaining bytes on drop. build wrapper to ensure these shutdown instructions are always honed.
                 writer.flush().await?;
                 writer.shutdown().await?;
 

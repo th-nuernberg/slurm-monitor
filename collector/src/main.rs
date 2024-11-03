@@ -1,6 +1,7 @@
 use std::io::Write;
 use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::thread;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use chrono::Local;
@@ -32,8 +33,12 @@ fn main() -> Result<()> {
     send_initial_data(server_addr, &mut sys, &nvml)?;
 
     loop {
+        let pre = Instant::now();
         send_monitoring_data(server_addr, &mut sys, &nvml)?;
-        thread::sleep(tx_interval.to_std()?);
+
+        let sleep_for = tx_interval.to_std()? - (Instant::now() - pre);
+        info!("sleeping for {sleep_for:?}…");
+        thread::sleep(sleep_for);
     }
 }
 

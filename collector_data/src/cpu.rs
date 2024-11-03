@@ -65,10 +65,7 @@ pub struct CpuUsage {
 }
 
 impl CpuUsage {
-    pub fn get_usage_per_job(
-        sys: &System,
-        job: &Job,
-    ) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
+    pub fn get_usage_per_job(sys: &System, job: &Job) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
         // get cpu id
         // for each process the cpu id (psr)
         let cpu_id_per_pid: HashMap<u32, u32> = Self::get_pid_psr()?;
@@ -101,16 +98,10 @@ impl CpuUsage {
         Ok(cpu_usages.values().cloned().collect())
     }
 
-    pub fn get_non_job_usage(
-        sys: &System,
-        jobs: &[Job],
-    ) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
+    pub fn get_non_job_usage(sys: &System, jobs: &[Job]) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
         let mut job_processes: Vec<u32> = Vec::new();
-        jobs.iter().for_each(|job| {
-            job.processes
-                .iter()
-                .for_each(|process| job_processes.push(*process))
-        });
+        jobs.iter()
+            .for_each(|job| job.processes.iter().for_each(|process| job_processes.push(*process)));
 
         let processes_wo_job: Vec<u32> = sys
             .processes()
@@ -162,10 +153,7 @@ impl CpuUsage {
             .map(|line| {
                 let elements: Vec<&str> = line.split_whitespace().collect();
                 // TODO PANICS
-                (
-                    elements[0].parse::<u32>().unwrap(),
-                    elements[1].parse::<u32>().unwrap(),
-                )
+                (elements[0].parse::<u32>().unwrap(), elements[1].parse::<u32>().unwrap())
             })
             .collect();
 

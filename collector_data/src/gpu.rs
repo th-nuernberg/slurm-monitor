@@ -51,10 +51,7 @@ pub struct GpuUsage {
 }
 
 impl GpuUsage {
-    pub fn get_usage_per_job(
-        job: &Job,
-        nvml: &Nvml,
-    ) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
+    pub fn get_usage_per_job(job: &Job, nvml: &Nvml) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
         let mut gpu_usages = HashMap::<&str, GpuUsage>::new();
 
         let gpu_usage_per_pid = Self::get_gpu_usage_per_pid(&nvml)?;
@@ -89,17 +86,10 @@ impl GpuUsage {
         Ok(gpu_usages.values().cloned().collect())
     }
 
-    pub fn get_non_job_usage(
-        sys: &System,
-        jobs: &[Job],
-        nvml: &Nvml,
-    ) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
+    pub fn get_non_job_usage(sys: &System, jobs: &[Job], nvml: &Nvml) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
         let mut job_processes: Vec<u32> = Vec::new();
-        jobs.iter().for_each(|job| {
-            job.processes
-                .iter()
-                .for_each(|process| job_processes.push(*process))
-        });
+        jobs.iter()
+            .for_each(|job| job.processes.iter().for_each(|process| job_processes.push(*process)));
 
         let processes_wo_job: Vec<u32> = sys
             .processes()
@@ -142,11 +132,8 @@ impl GpuUsage {
         Ok(gpu_usages.values().cloned().collect())
     }
 
-    fn get_gpu_usage_per_pid(
-        nvml: &Nvml,
-    ) -> Result<HashMap<u32, (String, u32, f32)>, Box<dyn std::error::Error>> {
-        let mut gpu_usage_per_pid: HashMap<u32, (String, u32, f32)> =
-            HashMap::<u32, (String, u32, f32)>::new();
+    fn get_gpu_usage_per_pid(nvml: &Nvml) -> Result<HashMap<u32, (String, u32, f32)>, Box<dyn std::error::Error>> {
+        let mut gpu_usage_per_pid: HashMap<u32, (String, u32, f32)> = HashMap::<u32, (String, u32, f32)>::new();
 
         let device_count = nvml.device_count()?;
 

@@ -49,16 +49,10 @@ impl NodeUsage {
         })
     }
 
-    pub fn get_non_job_usage(
-        sys: &System,
-        jobs: &[Job],
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn get_non_job_usage(sys: &System, jobs: &[Job]) -> Result<Self, Box<dyn std::error::Error>> {
         let mut job_processes: Vec<u32> = Vec::new();
-        jobs.iter().for_each(|job| {
-            job.processes
-                .iter()
-                .for_each(|process| job_processes.push(*process))
-        });
+        jobs.iter()
+            .for_each(|job| job.processes.iter().for_each(|process| job_processes.push(*process)));
 
         let processes_wo_job: Vec<u32> = sys
             .processes()

@@ -59,18 +59,14 @@ pub mod plot {
         }
     }
 
-    fn minmax_by_key<Tx, Ty>(
-        dataset: impl Iterator<Item = (Tx, Ty)>,
-    ) -> Result<(Point<Tx, Ty>, Point<Tx, Ty>)>
+    fn minmax_by_key<Tx, Ty>(dataset: impl Iterator<Item = (Tx, Ty)>) -> Result<(Point<Tx, Ty>, Point<Tx, Ty>)>
     where
         Tx: Clone,
         Ty: Clone + PartialOrd,
     {
         Ok(match dataset.minmax_by_key(|(_, y)| y.clone()) {
             itertools::MinMaxResult::NoElements => bail!("empty dataset"),
-            itertools::MinMaxResult::OneElement((x, y)) => {
-                (Point(x.clone(), y.clone()), Point(x, y))
-            }
+            itertools::MinMaxResult::OneElement((x, y)) => (Point(x.clone(), y.clone()), Point(x, y)),
             itertools::MinMaxResult::MinMax((x1, y1), (x2, y2)) => (Point(x1, y1), Point(x2, y2)),
         })
     }

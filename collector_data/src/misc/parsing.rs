@@ -18,30 +18,20 @@ pub mod duration {
 
         fn try_from(value: String) -> Result<Self, Self::Error> {
             let chars = value.chars().collect_vec();
-            let (time, time_str, parse_fn): (&[char], &str, Box<dyn Fn(i64) -> Option<Duration>>) =
-                match chars.as_slice() {
-                    [milliseconds @ .., 'm', 's'] => (
-                        milliseconds,
-                        "milliseconds",
-                        Box::new(Duration::try_milliseconds),
-                    ),
-                    [seconds @ .., 's'] => (seconds, "seconds", Box::new(Duration::try_seconds)),
-                    [minutes @ .., 'm'] => (minutes, "minutes", Box::new(Duration::try_minutes)),
-                    [hours @ .., 'h'] => (hours, "hours", Box::new(Duration::try_hours)),
-                    x @ _ => bail!(
-                        "parsing duration: {x}: invalid suffix (only h, m, s, ms)",
-                        x = x.into_iter().collect::<String>()
-                    ),
-                };
+            let (time, time_str, parse_fn): (&[char], &str, Box<dyn Fn(i64) -> Option<Duration>>) = match chars.as_slice() {
+                [milliseconds @ .., 'm', 's'] => (milliseconds, "milliseconds", Box::new(Duration::try_milliseconds)),
+                [seconds @ .., 's'] => (seconds, "seconds", Box::new(Duration::try_seconds)),
+                [minutes @ .., 'm'] => (minutes, "minutes", Box::new(Duration::try_minutes)),
+                [hours @ .., 'h'] => (hours, "hours", Box::new(Duration::try_hours)),
+                x @ _ => bail!(
+                    "parsing duration: {x}: invalid suffix (only h, m, s, ms)",
+                    x = x.into_iter().collect::<String>()
+                ),
+            };
             let time = time.into_iter().collect::<String>();
-            Ok(DurationWrapper(
-                time.parse::<i64>()
-                    .context("parsing duration from string")
-                    .and_then(|dur| {
-                        parse_fn(dur)
-                            .ok_or_else(|| eyre!("Could not parse {} as {}", time, time_str))
-                    })?,
-            ))
+            Ok(DurationWrapper(time.parse::<i64>().context("parsing duration from string").and_then(
+                |dur| parse_fn(dur).ok_or_else(|| eyre!("Could not parse {} as {}", time, time_str)),
+            )?))
         }
     }
 
@@ -63,22 +53,10 @@ mod test {
 
     #[test]
     fn Duration__try_from_string() {
-        assert_eq!(
-            Duration::try_from("35s").unwrap(),
-            Duration(chrono::Duration::seconds(35))
-        );
-        assert_eq!(
-            Duration::try_from("27m").unwrap(),
-            Duration(chrono::Duration::minutes(27))
-        );
-        assert_eq!(
-            Duration::try_from("3h").unwrap(),
-            Duration(chrono::Duration::hours(3))
-        );
-        assert_eq!(
-            Duration::try_from("500ms").unwrap(),
-            Duration(chrono::Duration::milliseconds(500))
-        );
+        assert_eq!(Duration::try_from("35s").unwrap(), Duration(chrono::Duration::seconds(35)));
+        assert_eq!(Duration::try_from("27m").unwrap(), Duration(chrono::Duration::minutes(27)));
+        assert_eq!(Duration::try_from("3h").unwrap(), Duration(chrono::Duration::hours(3)));
+        assert_eq!(Duration::try_from("500ms").unwrap(), Duration(chrono::Duration::milliseconds(500)));
 
         assert!(Duration::try_from("500").is_err());
         assert!(Duration::try_from("400k").is_err());

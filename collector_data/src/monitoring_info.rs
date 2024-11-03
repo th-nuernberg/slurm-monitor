@@ -23,10 +23,7 @@ pub struct DataObject {
 pub struct DataSet {}
 
 impl DataObject {
-    pub fn get_starting_info(
-        sys: &mut System,
-        nvml: &Nvml,
-    ) -> Result<String, Box<dyn std::error::Error>> {
+    pub fn get_starting_info(sys: &mut System, nvml: &Nvml) -> Result<String, Box<dyn std::error::Error>> {
         sys.refresh_all();
         let static_info = StaticInfo::get_static_info(&sys, &nvml)?;
         let monitor_info = MonitorInfo::get_monitoring_info(&sys, &nvml)?;
@@ -38,10 +35,7 @@ impl DataObject {
         Ok(serde_json::to_string(&data_object)?)
     }
 
-    pub fn get_monitoring_data(
-        sys: &mut System,
-        nvml: &Nvml,
-    ) -> Result<String, Box<dyn std::error::Error>> {
+    pub fn get_monitoring_data(sys: &mut System, nvml: &Nvml) -> Result<String, Box<dyn std::error::Error>> {
         sys.refresh_all();
         sys.refresh_all();
         let monitor_info = MonitorInfo::get_monitoring_info(&sys, &nvml)?;
@@ -67,11 +61,7 @@ impl StaticInfo {
         let cpu_info = Cpu::get_static_info()?;
         let gpu_info = GpuInfo::get_static_info(&nvml)?;
 
-        Ok(StaticInfo {
-            node_info,
-            cpu_info,
-            gpu_info,
-        })
+        Ok(StaticInfo { node_info, cpu_info, gpu_info })
     }
 }
 

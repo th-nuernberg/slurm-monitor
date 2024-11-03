@@ -28,9 +28,7 @@ use tokio::{
     task::JoinHandle,
     time::sleep,
 };
-use tracing::{
-    debug, debug_span, error, field, info, instrument, span, trace, warn, Instrument, Level, Span,
-};
+use tracing::{debug, debug_span, error, field, info, instrument, span, trace, warn, Instrument, Level, Span};
 
 const CHECK_STALE_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -45,18 +43,12 @@ async fn main() -> Result<()> {
 
     register_logging(args.log_level)?;
 
-    let _check_stale_worker_handle = start_check_stale_worker(
-        client_map.clone(),
-        CHECK_STALE_INTERVAL,
-        abort_handler.clone(),
-    );
+    let _check_stale_worker_handle = start_check_stale_worker(client_map.clone(), CHECK_STALE_INTERVAL, abort_handler.clone());
     let (save_worker_handle, save_tx) = start_save_worker(data_dir, abort_handler.clone())?;
 
     let socket = TcpListener::bind((args.ip, args.port)).await?;
-    let socket_stream =
-        futures::stream::poll_fn(move |ctx| socket.poll_accept(ctx).map(Option::from)); // TODO (maybe) find out if the closures context arg is relevant to us (and what it means in general)
-    let (mut socket_stream, socket_stream_abort_handler) =
-        futures::stream::abortable(socket_stream);
+    let socket_stream = futures::stream::poll_fn(move |ctx| socket.poll_accept(ctx).map(Option::from)); // TODO (maybe) find out if the closures context arg is relevant to us (and what it means in general)
+    let (mut socket_stream, socket_stream_abort_handler) = futures::stream::abortable(socket_stream);
 
     tokio::spawn({
         let abort_handler = abort_handler.clone();
@@ -102,14 +94,10 @@ async fn main() -> Result<()> {
     // we only join on save_worker, because checking for stale clients is irrelevant at this point, and we explicitly
     // want the `accept()` loop to quit. Downside is hypothetical abortion of open connections, but that would require
     // using the `JoinHandle`s from the nested `spawn()`
-    let _ = join!(save_worker_handle)
-        .0
-        .map_err(anyhow::Error::new)
-        .and_then(|x| x)
-        .map_err(|e| {
-            error!("save worker crashed: {e:#}");
-            ()
-        }); // wait for save worker, unwrap if ok (flatten())
+    let _ = join!(save_worker_handle).0.map_err(anyhow::Error::new).and_then(|x| x).map_err(|e| {
+        error!("save worker crashed: {e:#}");
+        ()
+    }); // wait for save worker, unwrap if ok (flatten())
 
     Ok(())
 }
@@ -127,11 +115,7 @@ fn register_logging(level: Option<Level>) -> Result<()> {
 }
 
 #[instrument]
-async fn start_check_stale_worker(
-    connections: ClientMap,
-    interval: Duration,
-    abort_handler: AbortHandler,
-) -> JoinHandle<()> {
+async fn start_check_stale_worker(connections: ClientMap, interval: Duration, abort_handler: AbortHandler) -> JoinHandle<()> {
     use tokio::time::interval as new_interval;
     let mut interval = new_interval(interval);
     tokio::spawn(async move {
@@ -140,10 +124,7 @@ async fn start_check_stale_worker(
 
             for (client, metadata) in connections.lock().await.iter() {
                 if metadata.has_timed_out() {
-                    warn!(
-                        "{client}: Client timed out (last seen {})",
-                        metadata.last_recv
-                    );
+                    warn!("{client}: Client timed out (last seen {})", metadata.last_recv);
                 }
             }
         }
@@ -167,9 +148,7 @@ async fn handle_connection(
         .with_context(|| format!("reading TcpStream from {client_addr}"))?;
 
     let packet: DataObject = serde_json::from_slice(&buf)?;
-    save_tx
-        .send(packet)
-        .with_context(|| format!("trying to save packet from {client_addr}"))?;
+    save_tx.send(packet).with_context(|| format!("trying to save packet from {client_addr}"))?;
 
     let _ = update_last_recv(client_addr, &mut client_map)
         .map_err(|e| error!(?e, "Could not update client metadata"))
@@ -183,10 +162,7 @@ async fn handle_connection(
 ///
 /// This needs to run in its own task, to synchronize writing to FS.
 // FIXME (important) check for errors && restart while main loop is running. (Currently, join! only checks at the end)
-fn start_save_worker(
-    path: &Path,
-    abort_handler: AbortHandler,
-) -> Result<(JoinHandle<Result<()>>, UnboundedSender<DataObject>)> {
+fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHandle<Result<()>>, UnboundedSender<DataObject>)> {
     let (tx, mut rx) = unbounded_channel();
     let path = path.to_path_buf();
 
@@ -223,66 +199,73 @@ fn start_save_worker(
 
                 // TODO if file exists but some parsing/reading error occurs, append digit and try again.
                 let mut all_objects: Vec<DataObject> = if filename.exists() {
-                    let stream = tokio_stream::iter(0_usize..).then(|counter| {
-                        let filename = filename.clone();
-                        async move {
-                            let filename = if counter == 0 {
-                                filename
-                            } else {
-                                filename.with_file_name(format!("{}.{counter}.json", filename.file_stem().ok_or(anyhow!("no file stem on {filename:?}? wtf"))?.to_string_lossy()))
-                            };
+                    let stream = tokio_stream::iter(0_usize..)
+                        .then(|counter| {
+                            let filename = filename.clone();
+                            async move {
+                                let filename = if counter == 0 {
+                                    filename
+                                } else {
+                                    filename.with_file_name(format!(
+                                        "{}.{counter}.json",
+                                        filename.file_stem().ok_or(anyhow!("no file stem on {filename:?}? wtf"))?.to_string_lossy()
+                                    ))
+                                };
 
-                            if filename.exists() && !filename.is_file() {
-                                error!("WTF. Don't go creating non-regulare file objects like {}. Failed to save JSON, exiting…", filename.to_string_lossy());
-                                bail!(
-                                    "tried to save to {} but it was a non-regular file",
-                                    filename.to_string_lossy()
-                                );
+                                if !filename.exists() {
+                                    // all existing files errored, so we return a fresh start (to keep writing)
+                                    return Ok(Vec::new());
+                                }
+
+                                if filename.exists() && !filename.is_file() {
+                                    error!(
+                                        "WTF. Don't go creating non-regulare file objects like {}. Failed to save JSON, exiting…",
+                                        filename.to_string_lossy()
+                                    );
+                                    bail!("tried to save to {} but it was a non-regular file", filename.to_string_lossy());
+                                }
+                                Ok(
+                                    serde_json::from_str::<Vec<DataObject>>(&read_to_string(&filename).await.context("reading DataObject JSON file")?)
+                                        .context("parsing DataObject JSON (from file)")?,
+                                )
                             }
-                            Ok(serde_json::from_str::<Vec<DataObject>>(
-                                &read_to_string(&filename)
-                                    .await
-                                    .context("reading DataObject JSON file")?,
-                            )
-                            .context("parsing DataObject JSON (from file)")?)
-                        }
-                    }).filter_map(|result| std::future::ready(match result {
-                        Ok(val) => Some(val),
-                        Err(e) => {
-                            warn!("{e:#}: Save file defective, skipping to next…");
-                            None
-                        },
-                    }));
+                        })
+                        .filter_map(|result| {
+                            std::future::ready(match result {
+                                Ok(val) => Some(val),
+                                Err(e) => {
+                                    warn!("{e:#}: Save file defective, skipping to next…");
+                                    None
+                                }
+                            })
+                        });
 
                     pin_mut!(stream);
-                    stream.next().await.ok_or_else(|| anyhow!("Couldn't find a suitable save file (or fallback thereof).\n\n…FML dafuq?!"))?
+                    stream
+                        .next()
+                        .await
+                        .ok_or_else(|| anyhow!("Couldn't find a suitable save file (or fallback thereof).\n\n…FML dafuq?!"))?
                 } else {
-                    info!(
-                        "{} didn't exist when saving, creating.",
-                        filename.to_string_lossy()
-                    );
+                    info!("{} didn't exist when saving, creating.", filename.to_string_lossy());
                     Vec::default()
                 };
                 all_objects.push(packet);
 
-                let mut writer = 
-                    File::create(filename)
-                        .await
-                        .context("opening DataObject JSON (2nd time, for writing)")?;
+                let mut writer = File::create(filename).await.context("opening DataObject JSON (2nd time, for writing)")?;
                 writer
                     .write_all(&serde_json::to_vec_pretty(&all_objects)?)
                     .await
                     .context("writing (updated) DataObject JSON")?;
-                
+
                 // TODO rust fs is _the horror_. build wrapper to ensure these shutdown instructions are always honed.
                 writer.flush().await?;
                 writer.shutdown().await?;
 
-
                 debug!("successfully updated DataObjects");
                 Ok(())
-            }.instrument( debug_span!("save_worker inner loop",
-            measured_when = field::Empty, target_file = field::Empty)).await?
+            }
+            .instrument(debug_span!("save_worker inner loop", measured_when = field::Empty, target_file = field::Empty))
+            .await?
         }
         Ok(())
     });
@@ -293,10 +276,7 @@ fn start_save_worker(
 #[instrument]
 async fn update_last_recv(client_addr: SocketAddr, client_map: &mut ClientMap) -> Result<()> {
     let mut client_map = client_map.lock().await;
-    client_map
-        .entry(client_addr)
-        .or_default()
-        .update_last_recv();
+    client_map.entry(client_addr).or_default().update_last_recv();
 
     Ok(())
 }

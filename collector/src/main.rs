@@ -39,31 +39,20 @@ fn main() -> Result<()> {
 
 fn init_logger() {
     env_logger::Builder::new()
-        .format(|buf, record| {
-            writeln!(
-                buf,
-                "{} [{}] - {}",
-                Local::now().format("%Y-%m-%dT%H:%M:%S"),
-                record.level(),
-                record.args()
-            )
-        })
+        .format(|buf, record| writeln!(buf, "{} [{}] - {}", Local::now().format("%Y-%m-%dT%H:%M:%S"), record.level(), record.args()))
         .filter(None, LevelFilter::Info)
         .init();
 }
 
 fn read_config() -> Result<Settings> {
     info!("Loading config");
-    Settings::new()
-        .map_err(anyhow::Error::new)
-        .context("parsing config file")
+    Settings::new().map_err(anyhow::Error::new).context("parsing config file")
 }
 
 fn send_initial_data(server_addr: SocketAddr, sys: &mut System, nvml: &Nvml) -> Result<()> {
     // Send static information
     info!("Getting starting info");
-    let starting_info =
-        DataObject::get_starting_info(sys, &nvml).map_err(|e| anyhow::Error::msg(e.to_string()))?;
+    let starting_info = DataObject::get_starting_info(sys, &nvml).map_err(|e| anyhow::Error::msg(e.to_string()))?;
     debug!("Starting info: {starting_info}");
 
     log::info!("Connecting to server");
@@ -78,8 +67,7 @@ fn send_initial_data(server_addr: SocketAddr, sys: &mut System, nvml: &Nvml) -> 
 
 fn send_monitoring_data(server_addr: SocketAddr, sys: &mut System, nvml: &Nvml) -> Result<()> {
     info!("Getting monitoring data");
-    let monitoring_data = DataObject::get_monitoring_data(sys, &nvml)
-        .map_err(|e| anyhow::Error::msg(e.to_string()))?;
+    let monitoring_data = DataObject::get_monitoring_data(sys, &nvml).map_err(|e| anyhow::Error::msg(e.to_string()))?;
     debug!("Monitoring data: {monitoring_data}");
 
     let mut stream = TcpStream::connect(server_addr)?;

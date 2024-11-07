@@ -7,6 +7,8 @@ use thiserror::Error;
 /// Given output from `sacct -P`, parses it into a line vector consisting of HashMaps. This works by taking the first line as header.
 ///
 /// Returns a (header, data) tuple
+// TODO refactor type (and whole function tbh)
+#[allow(clippy::type_complexity)]
 pub fn sacct_csvlike(input: impl AsRef<str>) -> Result<(Vec<String>, Vec<Result<HashMap<String, String>>>)> {
     let input = input.as_ref();
     let mut lines = input.lines();

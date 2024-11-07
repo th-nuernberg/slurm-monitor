@@ -26,17 +26,18 @@ pub mod duration {
 
         fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
             let chars = value.chars().collect_vec();
+            #[allow(clippy::type_complexity)]
             let (time, time_str, parse_fn): (&[char], &str, Box<dyn Fn(i64) -> Option<Duration>>) = match chars.as_slice() {
                 [milliseconds @ .., 'm', 's'] => (milliseconds, "milliseconds", Box::new(Duration::try_milliseconds)),
                 [seconds @ .., 's'] => (seconds, "seconds", Box::new(Duration::try_seconds)),
                 [minutes @ .., 'm'] => (minutes, "minutes", Box::new(Duration::try_minutes)),
                 [hours @ .., 'h'] => (hours, "hours", Box::new(Duration::try_hours)),
-                x @ _ => bail!(
+                invalid => bail!(
                     "parsing duration: {x}: invalid suffix (only h, m, s, ms)",
-                    x = x.into_iter().collect::<String>()
+                    x = invalid.iter().collect::<String>()
                 ),
             };
-            let time = time.into_iter().collect::<String>();
+            let time = time.iter().collect::<String>();
             Ok(DurationWrapper(time.parse::<i64>().context("parsing duration from string").and_then(
                 |dur| parse_fn(dur).ok_or_else(|| eyre!("Could not parse {} as {}", time, time_str)),
             )?))

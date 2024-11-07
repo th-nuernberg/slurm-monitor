@@ -98,7 +98,6 @@ async fn main() -> Result<()> {
     // using the `JoinHandle`s from the nested `spawn()`
     let _ = join!(save_worker_handle).0.map_err(anyhow::Error::new).and_then(|x| x).map_err(|e| {
         error!("save worker crashed: {e:#}");
-        ()
     }); // wait for save worker, unwrap if ok (flatten())
 
     Ok(())
@@ -117,7 +116,7 @@ fn register_logging(level: Option<Level>) -> Result<()> {
 }
 
 #[instrument]
-async fn start_check_stale_worker(connections: ClientMap, interval: Duration, abort_handler: AbortHandler) -> JoinHandle<()> {
+fn start_check_stale_worker(connections: ClientMap, interval: Duration, abort_handler: AbortHandler) -> JoinHandle<()> {
     use tokio::time::interval as new_interval;
     let mut interval = new_interval(interval);
     tokio::spawn(async move {
@@ -196,7 +195,7 @@ fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHa
                 trace!("try_recv(): Ok(packet) => process…");
                 Span::current().record("measured_when", format!("{:?}", packet.time));
 
-                let filename = path.join(format!("{date}.{SAVE_FILE_EXT}", date = packet.time.format("%Y-%m-%d").to_string()));
+                let filename = path.join(format!("{date}.{SAVE_FILE_EXT}", date = packet.time.format("%Y-%m-%d")));
                 Span::current().record("target_file", filename.to_string_lossy().as_ref());
 
                 // TODO if file exists but some parsing/reading error occurs, append digit and try again.
@@ -231,7 +230,7 @@ fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHa
                                 let mut buf = String::new();
                                 brotli.read_to_string(&mut buf).await.context("reading DataObject JSON file")?;
 
-                                Ok(serde_json::from_str::<Vec<Measurement>>(&buf).context("parsing DataObject JSON (from file)")?)
+                                serde_json::from_str::<Vec<Measurement>>(&buf).context("parsing DataObject JSON (from file)")
                             }
                         })
                         .filter_map(|result| {

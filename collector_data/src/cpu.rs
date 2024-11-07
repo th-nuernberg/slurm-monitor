@@ -74,13 +74,13 @@ impl CpuUsage {
         let mut cpu_usages = HashMap::<u32, CpuUsage>::new();
 
         for pid in &job.processes {
-            if let Some(process) = sys.process(Pid::from(*pid as usize).into()) {
-                let cpu_id = match cpu_id_per_pid.get(&pid) {
+            if let Some(process) = sys.process(Pid::from(*pid as usize)) {
+                let cpu_id = match cpu_id_per_pid.get(pid) {
                     Some(cpu_id) => cpu_id,
                     None => continue,
                 };
 
-                if !cpu_usages.contains_key(&cpu_id) {
+                if !cpu_usages.contains_key(cpu_id) {
                     cpu_usages.insert(
                         *cpu_id,
                         CpuUsage {
@@ -91,7 +91,7 @@ impl CpuUsage {
                     );
                 }
 
-                cpu_usages.get_mut(&cpu_id).unwrap().usage += process.cpu_usage();
+                cpu_usages.get_mut(cpu_id).unwrap().usage += process.cpu_usage();
             }
         }
 
@@ -107,7 +107,7 @@ impl CpuUsage {
             .processes()
             .iter()
             .map(|process| process.0.as_u32())
-            .filter(|process| !job_processes.contains(&process))
+            .filter(|process| !job_processes.contains(process))
             .collect();
 
         // get cpu id
@@ -123,7 +123,7 @@ impl CpuUsage {
                     None => continue,
                 };
 
-                if !cpu_usages.contains_key(&node_id) {
+                if !cpu_usages.contains_key(node_id) {
                     cpu_usages.insert(
                         *node_id,
                         CpuUsage {
@@ -134,7 +134,7 @@ impl CpuUsage {
                     );
                 }
 
-                cpu_usages.get_mut(&node_id).unwrap().usage += process.cpu_usage();
+                cpu_usages.get_mut(node_id).unwrap().usage += process.cpu_usage();
             }
         }
 

@@ -23,6 +23,7 @@ impl Job {
         // Format: JobId, JobName, User, StartTime, EndTime, JobPartition, JobState, Time used by job, Number of Nodes
         // allocated for job,
         // TODO: Use JobState to only get running jobs
+        #[allow(clippy::suspicious_command_arg_space)]
         let output = Command::new("squeue")
             .arg("-o %.18i %.8j %.8u %S %e %.8P %.2t %.10M %.6D")
             .arg("--state=R")
@@ -77,7 +78,7 @@ impl Job {
     fn get_process_per_job_id(job_id: &str) -> Vec<u32> {
         let output = Command::new("scontrol")
             .arg("listpids")
-            .arg(&job_id)
+            .arg(job_id)
             .output()
             .expect("Failed to execute scontrol");
 

@@ -29,7 +29,7 @@ impl ClientMetadata {
     }
 
     pub fn has_timed_out_since(&self, when: Option<DateTime<Local>>) -> bool {
-        when.unwrap_or_else(|| Local::now()) - self.last_recv > self.interval + self.timeout
+        when.unwrap_or_else(Local::now) - self.last_recv > self.interval + self.timeout
     }
 
     pub fn has_timed_out(&self) -> bool {

@@ -58,7 +58,7 @@ fn read_config() -> Result<Settings> {
 fn send_initial_data(server_addr: SocketAddr, sys: &mut System, nvml: &Nvml) -> Result<()> {
     // Send static information
     info!("Getting starting info");
-    let starting_info = State::get_starting_info(sys, &nvml).map_err(|e| anyhow::Error::msg(e.to_string()))?;
+    let starting_info = State::get_starting_info(sys, nvml).map_err(|e| anyhow::Error::msg(e.to_string()))?;
     debug!("Starting info: {starting_info}");
 
     log::info!("Connecting to server");
@@ -73,7 +73,7 @@ fn send_initial_data(server_addr: SocketAddr, sys: &mut System, nvml: &Nvml) -> 
 
 fn send_monitoring_data(server_addr: SocketAddr, sys: &mut System, nvml: &Nvml) -> Result<()> {
     info!("Getting monitoring data");
-    let monitoring_data = State::get_monitoring_data(sys, &nvml).map_err(|e| anyhow::Error::msg(e.to_string()))?;
+    let monitoring_data = State::get_monitoring_data(sys, nvml).map_err(|e| anyhow::Error::msg(e.to_string()))?;
     debug!("Monitoring data: {monitoring_data}");
 
     let mut stream = TcpStream::connect(server_addr)?;

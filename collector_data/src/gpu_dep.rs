@@ -62,18 +62,13 @@ impl GpuUsage {
         for pid in &job.processes {
             if let Some(gpu_usage) = gpu_usage_per_pid.get(pid) {
                 let gpu_id = &gpu_usage.0[..];
-                if !gpu_usages.contains_key(&gpu_id) {
-                    gpu_usages.insert(
-                        &gpu_id,
-                        GpuUsage {
-                            timestamp: chrono::offset::Local::now().format("%F %T").to_string(),
-                            gpu_id: gpu_id.to_string(),
-                            gpu_mem_alloc: 0,
-                            gpu_usage: 0.0,
-                            job_id: Some(job.id.clone()),
-                        },
-                    );
-                }
+                gpu_usages.entry(gpu_id).or_insert_with(|| GpuUsage {
+                    timestamp: chrono::offset::Local::now().format("%F %T").to_string(),
+                    gpu_id: gpu_id.to_string(),
+                    gpu_mem_alloc: 0,
+                    gpu_usage: 0.0,
+                    job_id: Some(job.id.clone()),
+                });
 
                 match gpu_usages.get_mut(&gpu_id) {
                     Some(gpu) => {
@@ -81,7 +76,7 @@ impl GpuUsage {
                         gpu.gpu_usage += gpu_usage.2;
                     }
                     // TODO: Error handle that one here better
-                    None => {}
+                    None => std::hint::black_box(()),
                 }
             }
         }
@@ -98,7 +93,7 @@ impl GpuUsage {
             .processes()
             .iter()
             .map(|process| process.0.as_u32())
-            .filter(|process| !job_processes.contains(&process))
+            .filter(|process| !job_processes.contains(process))
             .collect();
 
         let gpu_usage_per_pid = Self::get_gpu_usage_per_pid()?;
@@ -108,26 +103,17 @@ impl GpuUsage {
         for pid in processes_wo_job {
             if let Some(gpu_usage) = gpu_usage_per_pid.get(&pid) {
                 let gpu_id = &gpu_usage.0[..];
-                if !gpu_usages.contains_key(&gpu_id) {
-                    gpu_usages.insert(
-                        &gpu_id,
-                        GpuUsage {
-                            timestamp: chrono::offset::Local::now().format("%F %T").to_string(),
-                            gpu_id: gpu_id.to_string(),
-                            gpu_mem_alloc: 0,
-                            gpu_usage: 0.0,
-                            job_id: None,
-                        },
-                    );
-                }
+                gpu_usages.entry(gpu_id).or_insert_with(|| GpuUsage {
+                    timestamp: chrono::offset::Local::now().format("%F %T").to_string(),
+                    gpu_id: gpu_id.to_string(),
+                    gpu_mem_alloc: 0,
+                    gpu_usage: 0.0,
+                    job_id: None,
+                });
 
-                match gpu_usages.get_mut(&gpu_id) {
-                    Some(gpu) => {
-                        gpu.gpu_mem_alloc += gpu_usage.1;
-                        gpu.gpu_usage += gpu_usage.2;
-                    }
-                    // TODO: Error handle that one here better
-                    None => {}
+                if let Some(gpu) = gpu_usages.get_mut(&gpu_id) {
+                    gpu.gpu_mem_alloc += gpu_usage.1;
+                    gpu.gpu_usage += gpu_usage.2;
                 }
             }
         }

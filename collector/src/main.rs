@@ -36,8 +36,9 @@ fn main() -> Result<()> {
         let pre = Instant::now();
         send_monitoring_data(server_addr, &mut sys, &nvml)?;
 
-        let sleep_for = tx_interval.to_std()? - (Instant::now() - pre);
-        info!("sleeping for {sleep_for:?}…");
+        let it_took = Instant::now().saturating_duration_since(pre);
+        let sleep_for = tx_interval.to_std()?.saturating_sub(it_took);
+        info!("collecting data took: {it_took:?}\nsleeping for {sleep_for:?}…");
         thread::sleep(sleep_for);
     }
 }

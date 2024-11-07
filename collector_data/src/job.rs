@@ -1,6 +1,6 @@
-use std::process::Command;
-
+use color_eyre::Result;
 use serde::{Deserialize, Serialize};
+use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
@@ -19,7 +19,7 @@ impl Job {
     /// + Get active jobids (squeue)
     /// + Get pids per job (scontrol listpids)
     /// + Get pid info from other tools (nvidia-smi)
-    pub fn get_jobs() -> Result<Vec<Self>, Box<dyn std::error::Error>> {
+    pub fn get_jobs() -> Result<Vec<Self>> {
         // Format: JobId, JobName, User, StartTime, EndTime, JobPartition, JobState, Time used by job, Number of Nodes
         // allocated for job,
         // TODO: Use JobState to only get running jobs

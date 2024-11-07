@@ -17,6 +17,14 @@ pub mod duration {
         type Error = color_eyre::Report;
 
         fn try_from(value: String) -> Result<Self, Self::Error> {
+            Self::try_from(value.as_str())
+        }
+    }
+
+    impl TryFrom<&str> for DurationWrapper {
+        type Error = color_eyre::Report;
+
+        fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
             let chars = value.chars().collect_vec();
             let (time, time_str, parse_fn): (&[char], &str, Box<dyn Fn(i64) -> Option<Duration>>) = match chars.as_slice() {
                 [milliseconds @ .., 'm', 's'] => (milliseconds, "milliseconds", Box::new(Duration::try_milliseconds)),

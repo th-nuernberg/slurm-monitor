@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use super::job::Job;
 use chrono;
+use color_eyre::Result;
 use nvml_wrapper::{
     enums::device::UsedGpuMemory::{Unavailable, Used},
     Device, Nvml,
@@ -17,7 +18,7 @@ pub struct GpuInfo {
 
 impl GpuInfo {
     // TODO: (for usage too) set nvml or device as a parameter instead of creating a intance here
-    pub fn get_static_info(nvml: &Nvml) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
+    pub fn get_static_info(nvml: &Nvml) -> Result<Vec<Self>> {
         let device_count = nvml.device_count()?;
         let mut devices = Vec::<Device>::new();
         let mut static_info = Vec::<Self>::new();
@@ -51,7 +52,7 @@ pub struct GpuUsage {
 }
 
 impl GpuUsage {
-    pub fn get_usage_per_job(job: &Job, nvml: &Nvml) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
+    pub fn get_usage_per_job(job: &Job, nvml: &Nvml) -> Result<Vec<Self>> {
         let mut gpu_usages = HashMap::<&str, GpuUsage>::new();
 
         let gpu_usage_per_pid = Self::get_gpu_usage_per_pid(&nvml)?;
@@ -86,7 +87,7 @@ impl GpuUsage {
         Ok(gpu_usages.values().cloned().collect())
     }
 
-    pub fn get_non_job_usage(sys: &System, jobs: &[Job], nvml: &Nvml) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
+    pub fn get_non_job_usage(sys: &System, jobs: &[Job], nvml: &Nvml) -> Result<Vec<Self>> {
         let mut job_processes: Vec<u32> = Vec::new();
         jobs.iter()
             .for_each(|job| job.processes.iter().for_each(|process| job_processes.push(*process)));
@@ -132,7 +133,7 @@ impl GpuUsage {
         Ok(gpu_usages.values().cloned().collect())
     }
 
-    fn get_gpu_usage_per_pid(nvml: &Nvml) -> Result<HashMap<u32, (String, u32, f32)>, Box<dyn std::error::Error>> {
+    fn get_gpu_usage_per_pid(nvml: &Nvml) -> Result<HashMap<u32, (String, u32, f32)>> {
         let mut gpu_usage_per_pid: HashMap<u32, (String, u32, f32)> = HashMap::<u32, (String, u32, f32)>::new();
 
         let device_count = nvml.device_count()?;

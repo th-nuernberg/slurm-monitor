@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use color_eyre::Result;
 use nvml_wrapper::Nvml;
 use serde::{Deserialize, Serialize};
 use sysinfo::{System, SystemExt};
@@ -13,38 +14,34 @@ use super::{
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DataObject {
-    pub time: DateTime<Utc>,
-    pub static_info: Option<StaticInfo>,
-    pub monitor_info: MonitorInfo,
+pub enum State {
+    Initial(StaticInfo),
+    Current(MonitorInfo),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DataSet {}
+pub struct Measurement {
+    pub time: DateTime<Utc>,
+    pub state: State,
+}
 
-impl DataObject {
-    pub fn get_starting_info(sys: &mut System, nvml: &Nvml) -> Result<String, Box<dyn std::error::Error>> {
+impl State {
+    pub fn get_starting_info(sys: &mut System, nvml: &Nvml) -> Result<String> {
         sys.refresh_all();
         let static_info = StaticInfo::get_static_info(&sys, &nvml)?;
-        let monitor_info = MonitorInfo::get_monitoring_info(&sys, &nvml)?;
-        let data_object = DataObject {
-            static_info: Some(static_info),
-            monitor_info: monitor_info,
+        Ok(serde_json::to_string(&Measurement {
             time: chrono::offset::Utc::now(),
-        };
-        Ok(serde_json::to_string(&data_object)?)
+            state: State::Initial(static_info),
+        })?)
     }
 
-    pub fn get_monitoring_data(sys: &mut System, nvml: &Nvml) -> Result<String, Box<dyn std::error::Error>> {
-        sys.refresh_all();
+    pub fn get_monitoring_data(sys: &mut System, nvml: &Nvml) -> Result<String> {
         sys.refresh_all();
         let monitor_info = MonitorInfo::get_monitoring_info(&sys, &nvml)?;
-        let data_object = DataObject {
-            static_info: None,
-            monitor_info: monitor_info,
+        Ok(serde_json::to_string(&Measurement {
             time: chrono::offset::Utc::now(),
-        };
-        Ok(serde_json::to_string(&data_object)?)
+            state: State::Current(monitor_info),
+        })?)
     }
 }
 
@@ -56,7 +53,7 @@ pub struct StaticInfo {
 }
 
 impl StaticInfo {
-    fn get_static_info(sys: &System, nvml: &Nvml) -> Result<Self, Box<dyn std::error::Error>> {
+    fn get_static_info(sys: &System, nvml: &Nvml) -> Result<Self> {
         let node_info = NodeInfo::get_static_info(&sys)?;
         let cpu_info = Cpu::get_static_info()?;
         let gpu_info = GpuInfo::get_static_info(&nvml)?;
@@ -74,7 +71,7 @@ pub struct MonitorInfo {
 }
 
 impl MonitorInfo {
-    fn get_monitoring_info(sys: &System, nvml: &Nvml) -> Result<Self, Box<dyn std::error::Error>> {
+    fn get_monitoring_info(sys: &System, nvml: &Nvml) -> Result<Self> {
         let jobs = Job::get_jobs()?;
         let mut node_usages = Vec::<NodeUsage>::new();
         let mut cpu_usages = Vec::<CpuUsage>::new();

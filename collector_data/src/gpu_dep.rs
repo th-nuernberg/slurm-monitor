@@ -1,8 +1,8 @@
+use chrono;
+use color_eyre::Result;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::process::Command;
-
-use chrono;
-use serde::{Deserialize, Serialize};
 use sysinfo::{PidExt, System, SystemExt};
 
 use super::job::Job;
@@ -14,7 +14,7 @@ pub struct GpuInfo {
 }
 
 impl GpuInfo {
-    pub fn get_static_info() -> Result<Vec<Self>, Box<dyn std::error::Error>> {
+    pub fn get_static_info() -> Result<Vec<Self>> {
         let output = Command::new("nvidia-smi")
             .arg("--query-gpu=gpu_uuid,memory.total")
             .arg("--format=csv,noheader")
@@ -54,7 +54,7 @@ pub struct GpuUsage {
 }
 
 impl GpuUsage {
-    pub fn get_usage_per_job(job: &Job) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
+    pub fn get_usage_per_job(job: &Job) -> Result<Vec<Self>> {
         let mut gpu_usages = HashMap::<&str, GpuUsage>::new();
 
         let gpu_usage_per_pid = Self::get_gpu_usage_per_pid()?;
@@ -89,7 +89,7 @@ impl GpuUsage {
         Ok(gpu_usages.values().cloned().collect())
     }
 
-    pub fn get_non_job_usage(sys: &System, jobs: &[Job]) -> Result<Vec<Self>, Box<dyn std::error::Error>> {
+    pub fn get_non_job_usage(sys: &System, jobs: &[Job]) -> Result<Vec<Self>> {
         let mut job_processes: Vec<u32> = Vec::new();
         jobs.iter()
             .for_each(|job| job.processes.iter().for_each(|process| job_processes.push(*process)));
@@ -135,7 +135,7 @@ impl GpuUsage {
         Ok(gpu_usages.values().cloned().collect())
     }
 
-    fn get_gpu_usage_per_pid() -> Result<HashMap<u32, (String, u32, f32)>, Box<dyn std::error::Error>> {
+    fn get_gpu_usage_per_pid() -> Result<HashMap<u32, (String, u32, f32)>> {
         let output_per_pid = Command::new("nvidia-smi")
             .arg("--query-compute-apps=pid,gpu_uuid,used_gpu_memory") // for computing
             //process

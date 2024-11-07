@@ -6,8 +6,7 @@ use async_compression::tokio::write::BrotliEncoder;
 use clap::Parser as _;
 use cli::Args;
 use client::ClientMap;
-use collector_data::monitoring_info::DataObject;
-use flate2::read::DeflateDecoder;
+use collector_data::monitoring_info::Measurement;
 use futures::{join, pin_mut, StreamExt as _, TryFutureExt as _};
 use std::{
     collections::HashMap,
@@ -20,7 +19,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    fs::{read_to_string, File},
+    fs::File,
     io::{AsyncReadExt as _, AsyncWriteExt as _, BufReader, BufWriter},
     net::{TcpListener, TcpStream},
     sync::{
@@ -138,19 +137,19 @@ async fn start_check_stale_worker(connections: ClientMap, interval: Duration, ab
 #[instrument(skip(save_tx, client_map))]
 async fn handle_connection(
     new_connection: std::io::Result<(TcpStream, SocketAddr)>,
-    save_tx: UnboundedSender<DataObject>,
+    save_tx: UnboundedSender<Measurement>,
     mut client_map: ClientMap,
 ) -> Result<()> {
     let (mut stream, client_addr) = new_connection?;
 
-    let mut buf = Vec::<u8>::with_capacity(size_of::<DataObject>()); // reserve space for one object
+    let mut buf = Vec::<u8>::with_capacity(size_of::<Measurement>()); // reserve space for one object
     stream
         .read_to_end(&mut buf)
         .await
         .map(|len: usize| info!(len, "rx({client_addr})"))
         .with_context(|| format!("reading TcpStream from {client_addr}"))?;
 
-    let packet: DataObject = serde_json::from_slice(&buf)?;
+    let packet: Measurement = serde_json::from_slice(&buf)?;
     save_tx.send(packet).with_context(|| format!("trying to save packet from {client_addr}"))?;
 
     let _ = update_last_recv(client_addr, &mut client_map)
@@ -165,7 +164,7 @@ async fn handle_connection(
 ///
 /// This needs to run in its own task, to synchronize writing to FS.
 // FIXME (important) check for errors && restart while main loop is running. (Currently, join! only checks at the end)
-fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHandle<Result<()>>, UnboundedSender<DataObject>)> {
+fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHandle<Result<()>>, UnboundedSender<Measurement>)> {
     let (tx, mut rx) = unbounded_channel();
     let path = path.to_path_buf();
 
@@ -181,7 +180,7 @@ fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHa
                 /*let Some(packet): Option<DataObject> = rx.recv().await else {
                     return Ok(());
                 };*/
-                let packet: DataObject = match rx.try_recv() {
+                let packet: Measurement = match rx.try_recv() {
                     Ok(packet) => packet,
                     Err(e @ TryRecvError::Disconnected) => {
                         info!("save_channel.try_recv(): Disconnected => break out of loop");
@@ -201,7 +200,7 @@ fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHa
                 Span::current().record("target_file", filename.to_string_lossy().as_ref());
 
                 // TODO if file exists but some parsing/reading error occurs, append digit and try again.
-                let mut all_objects: Vec<DataObject> = if filename.exists() {
+                let mut all_objects = if filename.exists() {
                     let stream = tokio_stream::iter(0_usize..)
                         .then(|counter| {
                             let filename = filename.clone();
@@ -232,7 +231,7 @@ fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHa
                                 let mut buf = String::new();
                                 brotli.read_to_string(&mut buf).await.context("reading DataObject JSON file")?;
 
-                                Ok(serde_json::from_str::<Vec<DataObject>>(&buf).context("parsing DataObject JSON (from file)")?)
+                                Ok(serde_json::from_str::<Vec<Measurement>>(&buf).context("parsing DataObject JSON (from file)")?)
                             }
                         })
                         .filter_map(|result| {

@@ -1,3 +1,4 @@
+use color_eyre::Result;
 use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, PidExt, ProcessExt, System, SystemExt};
 
@@ -12,7 +13,7 @@ pub struct NodeInfo {
 }
 
 impl NodeInfo {
-    pub fn get_static_info(sys: &System) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn get_static_info(sys: &System) -> Result<Self> {
         Ok(NodeInfo {
             id: 1,
             // sys.total_memory return size in byte, need to divide it
@@ -32,7 +33,7 @@ pub struct NodeUsage {
 }
 
 impl NodeUsage {
-    pub fn get_usage_per_job(sys: &System, job: &Job) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn get_usage_per_job(sys: &System, job: &Job) -> Result<Self> {
         let mut mem_alloc_per_job = 0;
 
         for pid in &job.processes {
@@ -49,7 +50,7 @@ impl NodeUsage {
         })
     }
 
-    pub fn get_non_job_usage(sys: &System, jobs: &[Job]) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn get_non_job_usage(sys: &System, jobs: &[Job]) -> Result<Self> {
         let mut job_processes: Vec<u32> = Vec::new();
         jobs.iter()
             .for_each(|job| job.processes.iter().for_each(|process| job_processes.push(*process)));

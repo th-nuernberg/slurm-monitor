@@ -11,7 +11,6 @@ derive_builder = { version = "0.20.0", features = ["clippy"] }
 derive_more = { version = "1.0.0", features = ["from"] }
 env_logger = "0.11.5"
 itertools = "0.13.0"
-log = "0.4.22"
 nvml-wrapper = "0.10.0"
 serde = { version = "1.0.209", features = ["derive"] }
 serde_json = "1.0.127"

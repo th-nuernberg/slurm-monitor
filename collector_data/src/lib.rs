@@ -34,6 +34,7 @@ use color_eyre::{
     eyre::{ensure, eyre},
     Result,
 };
+use tracing::trace;
 
 pub const DEFAULT_INTERVAL: Duration = Duration::seconds(30);
 pub const DEFAULT_TIMEOUT: Duration = Duration::seconds(30);
@@ -44,11 +45,12 @@ pub const FILENAME_SUFFIX: &str = "json.br";
 #[tracing::instrument(skip(path), fields(path=format!("{:?}", path.as_ref())))]
 pub fn parse_filename(path: impl AsRef<Path>) -> Result<NaiveDate> {
     let path = path.as_ref();
-    let filename = path.file_stem().ok_or_else(|| eyre!("File has no file stem: {path:?}"))?;
+    let filename = path.file_name().ok_or_else(|| eyre!("File has no file stem: {path:?}"))?;
     let filename = filename.to_str().ok_or_else(|| eyre!("File name contains non-unicode: {filename:?}"))?;
 
     let (date, suffix) = NaiveDate::parse_and_remainder(filename, FILENAME_DATE_FMT)?;
 
+    trace!(filename, ?date, suffix);
     ensure!(suffix == format!(".{FILENAME_SUFFIX}"));
 
     Ok(date)

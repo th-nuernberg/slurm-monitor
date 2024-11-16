@@ -47,9 +47,7 @@ async fn main() -> Result<()> {
 
     let sacct_data_local = load_sacct(&args.data_dir)?;
     let (data, errors): (Vec<_>, Vec<_>) = sacct_data_local.into_iter().partition_result();
-    errors
-        .into_iter()
-        .for_each(|e| eprintln!("{:#}", e.context("parsing sacct data")));
+    errors.into_iter().for_each(|e| eprintln!("{:#}", e.context("parsing sacct data")));
     *DATA_SACCT.deref().write().await = data;
 
     // build our application with a route
@@ -88,9 +86,7 @@ fn load_sacct(data_dir: impl AsRef<Path>) -> Result<Vec<Result<(NaiveDateTime, S
                 .to_str()
                 .ok_or_else(|| anyhow!("{name}: non-unicode in file name"))?
                 .to_owned(),
-            entry
-                .file_type()
-                .with_context(|| format!("getting file type of {name}"))?,
+            entry.file_type().with_context(|| format!("getting file type of {name}"))?,
         ))
     }
 
@@ -112,8 +108,7 @@ fn load_sacct(data_dir: impl AsRef<Path>) -> Result<Vec<Result<(NaiveDateTime, S
                 return Ok(None);
             }
 
-            let content =
-                fs::read_to_string(entry.path()).with_context(|| format!("reading {filename}"))?;
+            let content = fs::read_to_string(entry.path()).with_context(|| format!("reading {filename}"))?;
             let datetime = data::datetime_from_filename(&filename)?;
 
             Result::Ok(Some((datetime, content)))
@@ -137,11 +132,7 @@ struct AppError(anyhow::Error);
 // Tell axum how to convert `AppError` into a response.
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Something went wrong: {}", self.0),
-        )
-            .into_response()
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("Something went wrong: {}", self.0)).into_response()
     }
 }
 
@@ -208,9 +199,7 @@ async fn make_jobcount_48h_chart() -> Result<Vec<u8>> {
 
     fn get_id(job: &HashMap<String, String>) -> Result<String> {
         job.get(SACCT_HEADER_JOBID)
-            .ok_or_else(|| {
-                anyhow!("Data inconsistency at '{job:?}': `{SACCT_HEADER_JOBID}` not found")
-            })
+            .ok_or_else(|| anyhow!("Data inconsistency at '{job:?}': `{SACCT_HEADER_JOBID}` not found"))
             .map(String::from)
     }
     let data = DATA_SACCT.read().await;
@@ -241,10 +230,7 @@ async fn make_jobcount_48h_chart() -> Result<Vec<u8>> {
 
     let (x, y) = (800u32, 600u32);
     let mut buf = vec![];
-    plot::jobcount_over_time(
-        render::create_bitmap_buffer(&mut buf, x, y),
-        dataset.as_slice(),
-    )?;
+    plot::jobcount_over_time(render::create_bitmap_buffer(&mut buf, x, y), dataset.as_slice())?;
     let image = RgbImage::from_raw(x, y, buf) // TODO there was a more compact way of loading raw images (maybe directly creating a buffer via images crate). Look it up in docs.
         .ok_or_else(|| anyhow!("failed to create image from internal buffer (too small?)"))
         .context("rendering job graph")?;

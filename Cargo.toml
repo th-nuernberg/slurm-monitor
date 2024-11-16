@@ -1,3 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["backend", "data", "frontend"]
+members = [ "api","backend", "collector", "collector_data", "database", "frontend"]
+
+[workspace.lints.clippy]
+unwrap_used = "deny"

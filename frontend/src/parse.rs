@@ -7,9 +7,9 @@ use thiserror::Error;
 /// Given output from `sacct -P`, parses it into a line vector consisting of HashMaps. This works by taking the first line as header.
 ///
 /// Returns a (header, data) tuple
-pub fn sacct_csvlike(
-    input: impl AsRef<str>,
-) -> Result<(Vec<String>, Vec<Result<HashMap<String, String>>>)> {
+// TODO refactor type (and whole function tbh)
+#[allow(clippy::type_complexity)]
+pub fn sacct_csvlike(input: impl AsRef<str>) -> Result<(Vec<String>, Vec<Result<HashMap<String, String>>>)> {
     let input = input.as_ref();
     let mut lines = input.lines();
     let Some(header) = lines.next() else {
@@ -24,9 +24,7 @@ pub fn sacct_csvlike(
                 .enumerate()
                 .map(|(i, field)| match header.get(i) {
                     Some(key) => Ok((String::from(key), String::from(field))),
-                    None => Err(anyhow!(
-                        "Parsing error at line {line_number}: too many fields"
-                    )),
+                    None => Err(anyhow!("Parsing error at line {line_number}: too many fields")),
                 })
                 .process_results(|iter| iter.collect::<HashMap<_, _>>())
         })

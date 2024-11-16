@@ -6,11 +6,7 @@ pub fn datetime_from_filename(name: &str) -> Result<NaiveDateTime> {
     const RESULTING_FORMAT_LEN: usize = "yyyy_mm_dd__hh_mm_ss".len();
     const POSITION: usize = 0; // datetime is at start of filename
 
-    let datetime_part: String = name
-        .chars()
-        .skip(POSITION)
-        .take(RESULTING_FORMAT_LEN)
-        .collect();
-    NaiveDateTime::parse_from_str(datetime_part.as_str(), FORMAT)
-            .with_context(|| format!("parsing datetime from {name}"))
+    #[allow(clippy::iter_skip_zero)]
+    let datetime_part: String = name.chars().skip(POSITION).take(RESULTING_FORMAT_LEN).collect();
+    NaiveDateTime::parse_from_str(datetime_part.as_str(), FORMAT).with_context(|| format!("parsing datetime from {name}"))
 }

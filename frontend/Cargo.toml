@@ -30,3 +30,7 @@ tokio = { version = "1.38.0", features = ["full"] }
 plotters = { git = "https://github.com/plotters-rs/plotters", branch = "next-release-devel" }
 collector_data = { version = "0.1.0", path = "../collector_data" }
 flate2 = "1.0.34"
+
+
+[lints]
+workspace = true

@@ -12,3 +12,6 @@ Somehow, one time the JSON was only partially written to disk.
 # Features
 - bei zu wenig GPU Auslastung: Anschreiben (und vlt leaderboard / hall of shame)
     - bei 100% pro Core auch (weil CPU boundness)
+
+## minor
+- change Cargo.toml paths of crate interdependencies to Git (so you dont have to clone everything)

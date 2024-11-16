@@ -25,7 +25,7 @@ impl Job {
         // TODO: Use JobState to only get running jobs
         #[allow(clippy::suspicious_command_arg_space)]
         let output = Command::new("squeue")
-            .arg("-o %.18i %.8j %.8u %S %e %.8P %.2t %.10M %.6D")
+            .arg("-o %i %j %u %S %e %P %t %M %D")
             .arg("--state=R")
             .output()
             .expect("Failed to execute process");

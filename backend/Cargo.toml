@@ -17,8 +17,20 @@ native_db = "0.7.1"
 serde = { version = "1.0.210", features = ["derive"] }
 serde_json = "1.0.128"
 signal-hook = "0.3.17"
-tokio = { version = "1.40.0", features = ["rt-multi-thread", "net", "io-std", "fs", "macros", "io-util", "sync", "tracing"] }
+tokio = { version = "1.40.0", features = [
+    "rt-multi-thread",
+    "net",
+    "io-std",
+    "fs",
+    "macros",
+    "io-util",
+    "sync",
+    "tracing",
+] }
 tokio-stream = "0.1.16"
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
 tracing-timing = "0.6.0"
+
+[lints]
+workspace = true

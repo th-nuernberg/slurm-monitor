@@ -149,7 +149,9 @@ async fn handle_connection(
         .with_context(|| format!("reading TcpStream from {client_addr}"))?;
 
     let packet: Measurement = serde_json::from_slice(&buf)?;
-    save_tx.send(packet).with_context(|| format!("trying to save packet from {client_addr}"))?;
+    save_tx
+        .send(packet)
+        .with_context(|| format!("trying to save packet from {client_addr}"))?;
 
     let _ = update_last_recv(client_addr, &mut client_map)
         .map_err(|e| error!(?e, "Could not update client metadata"))
@@ -209,7 +211,10 @@ fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHa
                                 } else {
                                     filename.with_file_name(format!(
                                         "{}.{counter}.{SAVE_FILE_EXT}",
-                                        filename.file_stem().ok_or(anyhow!("no file stem on {filename:?}? wtf"))?.to_string_lossy()
+                                        filename
+                                            .file_stem()
+                                            .ok_or(anyhow!("no file stem on {filename:?}? wtf"))?
+                                            .to_string_lossy()
                                     ))
                                 };
 
@@ -267,7 +272,11 @@ fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHa
                 debug!("successfully updated DataObjects");
                 Ok(())
             }
-            .instrument(debug_span!("save_worker inner loop", measured_when = field::Empty, target_file = field::Empty))
+            .instrument(debug_span!(
+                "save_worker inner loop",
+                measured_when = field::Empty,
+                target_file = field::Empty
+            ))
             .await?
         }
         Ok(())

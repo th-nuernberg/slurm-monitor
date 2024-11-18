@@ -8,6 +8,7 @@ use std::{
 };
 
 use async_compression::tokio::bufread::BrotliDecoder;
+use async_trait::async_trait;
 use chrono::{Date, DateTime, FixedOffset, NaiveDate, Utc};
 use clap::Parser;
 use collector_data::monitoring_info::Measurement;
@@ -18,14 +19,15 @@ use color_eyre::{
 use derive_getters::Getters;
 use futures::{FutureExt as _, TryFutureExt as _};
 use itertools::Itertools;
-use poem::{http::StatusCode, listener::TcpListener, FromRequest, Route, Server};
+use poem::{http::StatusCode, listener::TcpListener, Endpoint, EndpointExt, FromRequest, IntoResponse, Response, ResponseBuilder, Route, Server};
 use poem_openapi::{
     param::{Header, Query},
     payload::{Json, PlainText},
-    types::{ParseFromJSON, ParseFromParameter, Type},
+    types::{ParseFromJSON, ParseFromParameter, ToJSON, Type},
     NewType, OpenApi, OpenApiService,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tokio::{
     fs::File,
     io::{AsyncReadExt, BufReader},
@@ -60,6 +62,32 @@ impl Api {
         }
     }
 
+    #[oai(path = "/gpu_usage", method = "get")]
+    async fn gpu_usage(
+        &self,
+        start: Header<Option<DateTime<Utc>>>,
+        end: Header<Option<DateTime<Utc>>>,
+    ) -> Result<Json<serde_json::Value>, poem::Error> {
+        let measurements = self
+            .data
+            .read()
+            .await
+            .values()
+            .flat_map(|measurements_per_day| measurements_per_day.iter().cloned())
+            .filter_map(|Measurement { time, state }| match state {
+                collector_data::monitoring_info::State::Initial(static_info) => todo!(),
+                collector_data::monitoring_info::State::Current(monitor_info) => todo!(),
+            })
+            .take(limit.unwrap_or(usize::MAX))
+            .collect_vec();
+
+        let json = spawn_blocking(move || serde_json::to_value(&measurements).map_err(Self::into_500))
+            .await
+            .map_err(Self::into_500)??;
+
+        Ok(Json(json))
+    }
+
     #[oai(path = "/all", method = "get")]
     async fn all(
         &self,
@@ -90,6 +118,29 @@ pub struct Args {
     pub data_dir: PathBuf,
 }
 
+pub struct CommonParams {}
+
+pub struct WrapDataAccessEndpoint<E: Endpoint> {
+    inner: E,
+}
+
+impl<E: Endpoint> Endpoint for WrapDataAccessEndpoint<E> {
+    type Output = Response;
+
+    fn call(&self, req: poem::Request) -> impl std::future::Future<Output = poem::Result<Self::Output>> + Send {
+        async move {};
+        std::future::ready(unimplemented!("moved to wrap_data_access_middleware"))
+    }
+}
+
+async fn wrap_data_access_middleware<E: Endpoint>(inner: E, req: poem::Request) -> Result<impl IntoResponse, poem::Error> {
+    //self.inner.get_response(req).await.data::<impl Fn() -> … or so>().unwrap()
+
+    Ok(Response::builder().content_type("application/json").status(StatusCode::OK).body(
+        json!({"hello": "world", "inner": inner.get_response(req).await.into_body().into_string().await.map_err(|e| format!("{e:#}"))}).to_string(),
+    ))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::fmt().with_max_level(LevelFilter::TRACE).init();
@@ -104,7 +155,7 @@ async fn main() -> Result<()> {
 
     let api_service = OpenApiService::new(Api { data: data.clone() }, "Hello World", "1.0").server(format!("http://{SERVER_ADDR}"));
     let ui = api_service.swagger_ui();
-    let app = Route::new().nest("/", api_service).nest("/docs", ui);
+    let app = Route::new().nest("/", api_service.around(wrap_data_access_middleware)).nest("/docs", ui);
 
     let server = Server::new(TcpListener::bind(SERVER_ADDR));
     let (server_result, data_result) = join!(server.run(app), data_future);

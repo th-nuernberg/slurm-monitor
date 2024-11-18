@@ -58,7 +58,11 @@ impl StaticInfo {
         let cpu_info = Cpu::get_static_info()?;
         let gpu_info = GpuInfo::get_static_info(nvml)?;
 
-        Ok(StaticInfo { node_info, cpu_info, gpu_info })
+        Ok(StaticInfo {
+            node_info,
+            cpu_info,
+            gpu_info,
+        })
     }
 }
 

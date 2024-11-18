@@ -159,12 +159,15 @@ dependencies = [
 name = "api"
 version = "0.1.0"
 dependencies = [
+ "async-compression",
+ "async-trait",
  "chrono",
  "clap",
  "collector_data",
  "color-eyre",
  "derive-getters",
  "derive_more 1.0.0",
+ "futures",
  "itertools",
  "poem",
  "poem-openapi",
@@ -569,7 +572,6 @@ dependencies = [
  "derive_more 1.0.0",
  "env_logger",
  "itertools",
- "log",
  "nvml-wrapper",
  "serde",
  "serde_json",

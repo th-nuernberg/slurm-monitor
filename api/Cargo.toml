@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 async-compression = { version = "0.4.17", features = ["brotli"] }
+async-trait = "0.1.83"
 chrono = { version = "0.4.38", features = ["serde"] }
 clap = { version = "4.5.21", features = ["derive"] }
 collector_data = { version = "0.1.0", path = "../collector_data" }

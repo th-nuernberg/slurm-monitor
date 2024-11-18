@@ -45,7 +45,15 @@ fn main() -> Result<()> {
 
 fn init_logger() {
     env_logger::Builder::new()
-        .format(|buf, record| writeln!(buf, "{} [{}] - {}", Local::now().format("%Y-%m-%dT%H:%M:%S"), record.level(), record.args()))
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "{} [{}] - {}",
+                Local::now().format("%Y-%m-%dT%H:%M:%S"),
+                record.level(),
+                record.args()
+            )
+        })
         .filter(None, LevelFilter::Info)
         .init();
 }

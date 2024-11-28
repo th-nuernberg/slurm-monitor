@@ -22,6 +22,7 @@ pub enum State {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Measurement {
     pub time: DateTime<Utc>,
+    #[serde(flatten)]
     pub state: State,
 }
 

@@ -1,7 +1,8 @@
 use std::{
+    borrow::BorrowMut,
     collections::HashMap,
     future::IntoFuture,
-    ops::Range,
+    ops::{Deref, Range},
     path::{Path, PathBuf},
     sync::Arc,
     usize,
@@ -11,7 +12,10 @@ use async_compression::tokio::bufread::BrotliDecoder;
 use async_trait::async_trait;
 use chrono::{Date, DateTime, FixedOffset, NaiveDate, Utc};
 use clap::Parser;
-use collector_data::monitoring_info::Measurement;
+use collector_data::{
+    gpu::GpuUsage,
+    monitoring_info::{Measurement, MonitorInfo},
+};
 use color_eyre::{
     eyre::{bail, ensure, eyre, Context},
     Report, Result, Section,
@@ -33,24 +37,50 @@ use tokio::{
     io::{AsyncReadExt, BufReader},
     join,
     sync::RwLock,
-    task::spawn_blocking,
 };
-use tracing::{error, info, level_filters::LevelFilter, trace};
+use tracing::{error, info, level_filters::LevelFilter};
 
 // TODO thread that periodically (30sec? on change?) reloads a data file if it is updated (may need locking)
 
 const SERVER_ADDR: &str = "localhost:3034";
 
-type Data = Arc<RwLock<HashMap<NaiveDate, Arc<Vec<Measurement>>>>>;
+type Data = Arc<RwLock<Arc<HashMap<NaiveDate, Vec<Measurement>>>>>;
 
 struct Api {
     data: Data,
 }
-
 #[OpenApi]
 impl Api {
+    // TODO limit currently applies _before_ filtering. That might be counterintuitive.
     fn into_500(error: impl std::fmt::Display) -> poem::Error {
+        error!("Error generated during API call: {error:#}");
         poem::Error::from_string(format!("{error:#}"), StatusCode::INTERNAL_SERVER_ERROR)
+    }
+
+    async fn get_data(&self) -> Arc<HashMap<NaiveDate, Vec<Measurement>>> {
+        let measurements: Arc<HashMap<_, Vec<_>>> = self.data.read().await.clone();
+        measurements
+    }
+    fn filter_data<T>(
+        data: &HashMap<T, Vec<Measurement>>,
+        start: impl Deref<Target = Option<DateTime<Utc>>>,
+        end: impl Deref<Target = Option<DateTime<Utc>>>,
+        limit: impl Deref<Target = Option<usize>>,
+    ) -> impl Iterator<Item = &Measurement> {
+        data.values()
+            .flatten()
+            .filter(move |&measure| {
+                start.unwrap_or(DateTime::<Utc>::MIN_UTC) <= measure.time && measure.time <= end.unwrap_or(DateTime::<Utc>::MAX_UTC)
+            })
+            .take(limit.unwrap_or(usize::MAX))
+    }
+    fn return_json<T: Serialize>(data: T) -> Result<Json<serde_json::Value>, poem::Error> {
+        // TODO spawn_blocking would be better, but problem with 'static and internal refs inside data (I believe)
+        let json = /*spawn_blocking(move ||*/ serde_json::to_value(&data).map_err(Self::into_500)/*)
+            .await*/
+            .map_err(Self::into_500)?/*?*/;
+
+        Ok(Json(json))
     }
 
     #[tracing::instrument(skip_all, fields(name = name.0))]
@@ -65,50 +95,38 @@ impl Api {
     #[oai(path = "/gpu_usage", method = "get")]
     async fn gpu_usage(
         &self,
-        start: Header<Option<DateTime<Utc>>>,
-        end: Header<Option<DateTime<Utc>>>,
+        start: Query<Option<DateTime<Utc>>>,
+        end: Query<Option<DateTime<Utc>>>,
+        limit: Query<Option<usize>>,
     ) -> Result<Json<serde_json::Value>, poem::Error> {
-        let measurements = self
-            .data
-            .read()
-            .await
-            .values()
-            .flat_map(|measurements_per_day| measurements_per_day.iter().cloned())
-            .filter_map(|Measurement { time, state }| match state {
-                collector_data::monitoring_info::State::Initial(static_info) => todo!(),
-                collector_data::monitoring_info::State::Current(monitor_info) => todo!(),
+        let measurements = self.get_data().await;
+        let gpu_usage_by_job: Vec<HashMap<String, Vec<&GpuUsage>>> = Self::filter_data(&*measurements, start, end, limit)
+            .filter_map(|Measurement { time: _, state }| match state {
+                collector_data::monitoring_info::State::Initial(_) => None, // TODO maybe use static data (to find out about installed GPUs or sth)
+                collector_data::monitoring_info::State::Current(MonitorInfo {
+                    jobs: _,
+                    node_usages: _,
+                    cpu_usages: _,
+                    gpu_usages,
+                }) => Some(gpu_usages.iter().into_group_map_by(
+                    |usage| usage.job_id.clone().unwrap_or_default(), // empty string in JSON instead of Option::None
+                )),
             })
-            .take(limit.unwrap_or(usize::MAX))
             .collect_vec();
 
-        let json = spawn_blocking(move || serde_json::to_value(&measurements).map_err(Self::into_500))
-            .await
-            .map_err(Self::into_500)??;
-
-        Ok(Json(json))
+        Self::return_json(gpu_usage_by_job)
     }
 
     #[oai(path = "/all", method = "get")]
     async fn all(
         &self,
-        start: Header<Option<DateTime<Utc>>>,
-        end: Header<Option<DateTime<Utc>>>,
+        start: Query<Option<DateTime<Utc>>>,
+        end: Query<Option<DateTime<Utc>>>,
         limit: Query<Option<usize>>,
     ) -> Result<Json<serde_json::Value>, poem::Error> {
-        let measurements = self
-            .data
-            .read()
-            .await
-            .values()
-            .flat_map(|measurements_per_day| measurements_per_day.iter().cloned())
-            .take(limit.unwrap_or(usize::MAX))
-            .collect_vec();
+        let data = self.get_data().await;
 
-        let json = spawn_blocking(move || serde_json::to_value(&measurements).map_err(Self::into_500))
-            .await
-            .map_err(Self::into_500)??;
-
-        Ok(Json(json))
+        Self::return_json(Self::filter_data(&*data, start, end, limit).collect_vec())
     }
 }
 
@@ -118,7 +136,15 @@ pub struct Args {
     pub data_dir: PathBuf,
 }
 
-pub struct CommonParams {}
+/*
+
+#[derive(Object, Deserialize, Debug)]
+struct CommonParams {
+    start: Option<DateTime<Utc>>,
+    end: Option<DateTime<Utc>>,
+    limit: Option<usize>,
+}
+
 
 pub struct WrapDataAccessEndpoint<E: Endpoint> {
     inner: E,
@@ -139,7 +165,7 @@ async fn wrap_data_access_middleware<E: Endpoint>(inner: E, req: poem::Request) 
     Ok(Response::builder().content_type("application/json").status(StatusCode::OK).body(
         json!({"hello": "world", "inner": inner.get_response(req).await.into_body().into_string().await.map_err(|e| format!("{e:#}"))}).to_string(),
     ))
-}
+}*/
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -155,7 +181,7 @@ async fn main() -> Result<()> {
 
     let api_service = OpenApiService::new(Api { data: data.clone() }, "Hello World", "1.0").server(format!("http://{SERVER_ADDR}"));
     let ui = api_service.swagger_ui();
-    let app = Route::new().nest("/", api_service.around(wrap_data_access_middleware)).nest("/docs", ui);
+    let app = Route::new().nest("/", api_service).nest("/docs", ui);
 
     let server = Server::new(TcpListener::bind(SERVER_ADDR));
     let (server_result, data_result) = join!(server.run(app), data_future);
@@ -180,7 +206,20 @@ async fn load_datafile(data: Data, file: &Path) -> Result<NaiveDate> {
     let input = String::from_utf8_lossy(&buf).into_owned();
     //trace!("buf=`{buf:?}`");
     let measurements: Vec<Measurement> = serde_json::from_str(&input).wrap_err_with(|| format!("parsing {file:?}"))?;
-    data.write().await.insert(date, measurements.into());
+
+    // RwLock - keep lock for as short as possible
+    {
+        let mut write_lock = data.write().await;
+        // extract a &mut Arc<_> from a RwLockWriteGuard<Arc<_>>
+        let global_data: &mut Arc<_> = &mut *write_lock;
+        // Arc is immutable, so clone hash table from inside RwLockGuard and Arc so that we can mutate (insert) the new file
+        // (mem::take would be nice so we don't have to clone, but then we can't use Arc and let API functions hold the data while it not being locked. Would be a trade-off)
+        let mut local_data = (**global_data).clone();
+        local_data.insert(date, measurements.into());
+        // then, swap our table with the global one
+        *global_data = Arc::new(local_data)
+        //&**x = Arc::new(local_hashtable)
+    }
 
     Ok(date)
 }

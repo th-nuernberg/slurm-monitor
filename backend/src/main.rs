@@ -34,8 +34,8 @@ use tracing::{debug, debug_span, error, field, info, instrument, span, trace, wa
 const CHECK_STALE_INTERVAL: Duration = Duration::from_secs(5);
 const SAVE_FILE_EXT: &str = "json.br";
 
-//#[instrument]
-#[tokio::main]
+/// `whorker_threads`: only workers for async tasks (tokio::spawn, main). spawn_blocking spawns extra threads
+#[tokio::main(worker_threads = 4)]
 async fn main() -> Result<()> {
     let args = Args::parse();
     let data_dir = &args.data_dir;

@@ -43,7 +43,6 @@ use tracing::{error, info, level_filters::LevelFilter};
 // TODO thread that periodically (30sec? on change?) reloads a data file if it is updated (may need locking)
 
 const SERVER_ADDR: &str = "localhost:3034";
-
 type Data = Arc<RwLock<Arc<HashMap<NaiveDate, Vec<Measurement>>>>>;
 
 struct Api {
@@ -167,7 +166,8 @@ async fn wrap_data_access_middleware<E: Endpoint>(inner: E, req: poem::Request) 
     ))
 }*/
 
-#[tokio::main]
+/// `whorker_threads`: only workers for async tasks (tokio::spawn, main). spawn_blocking spawns extra threads
+#[tokio::main(worker_threads = 4)]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::fmt().with_max_level(LevelFilter::TRACE).init();
     let args = Args::parse();

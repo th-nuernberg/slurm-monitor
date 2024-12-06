@@ -200,8 +200,8 @@ fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHa
                 let filename = path.join(format!("{date}.{SAVE_FILE_EXT}", date = packet.time.format("%Y-%m-%d")));
                 Span::current().record("target_file", filename.to_string_lossy().as_ref());
 
-                // TODO if file exists but some parsing/reading error occurs, append digit and try again.
-                let mut all_objects = if filename.exists() {
+                // if file exists but some parsing/reading error occurs, append digit and try again.
+                let (filename, mut all_objects) = {
                     let stream = tokio_stream::iter(0_usize..)
                         .then(|counter| {
                             let filename = filename.clone();
@@ -220,7 +220,7 @@ fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHa
 
                                 if !filename.exists() {
                                     // all existing files errored, so we return a fresh start (to keep writing)
-                                    return Ok(Vec::new());
+                                    return Ok((filename, Vec::new()));
                                 }
 
                                 if filename.exists() && !filename.is_file() {
@@ -235,7 +235,10 @@ fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHa
                                 let mut buf = String::new();
                                 brotli.read_to_string(&mut buf).await.context("reading DataObject JSON file")?;
 
-                                serde_json::from_str::<Vec<Measurement>>(&buf).context("parsing DataObject JSON (from file)")
+                                Ok((
+                                    filename,
+                                    serde_json::from_str::<Vec<Measurement>>(&buf).context("parsing DataObject JSON (from file)")?,
+                                ))
                             }
                         })
                         .filter_map(|result| {
@@ -253,9 +256,6 @@ fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHa
                         .next()
                         .await
                         .ok_or_else(|| anyhow!("Couldn't find a suitable save file (or fallback thereof).\n\n…FML dafuq?!"))?
-                } else {
-                    info!("{} didn't exist when saving, creating.", filename.to_string_lossy());
-                    Vec::default()
                 };
                 all_objects.push(packet);
 

@@ -47,8 +47,8 @@ impl Default for ClientMetadata {
 #[cfg(test)]
 mod test {
 
-    use anyhow::Result;
     use chrono::{Duration, Local};
+    use color_eyre::Result;
 
     use super::*;
 

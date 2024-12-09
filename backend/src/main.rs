@@ -1,17 +1,18 @@
 mod cli;
 pub mod client;
 
-use anyhow::{anyhow, bail, Context, Error, Result};
 use async_compression::tokio::write::BrotliEncoder;
 use clap::Parser as _;
 use cli::Args;
 use client::ClientMap;
 use collector_data::monitoring_info::Measurement;
+use color_eyre::eyre::{bail, eyre, Context, Report, Result};
 use futures::{join, pin_mut, StreamExt as _, TryFutureExt as _};
+use serde::Deserialize;
 use std::{
     collections::HashMap,
     net::SocketAddr,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -96,7 +97,7 @@ async fn main() -> Result<()> {
     // we only join on save_worker, because checking for stale clients is irrelevant at this point, and we explicitly
     // want the `accept()` loop to quit. Downside is hypothetical abortion of open connections, but that would require
     // using the `JoinHandle`s from the nested `spawn()`
-    let _ = join!(save_worker_handle).0.map_err(anyhow::Error::new).and_then(|x| x).map_err(|e| {
+    let _ = join!(save_worker_handle).0.map_err(Report::new).and_then(|x| x).map_err(|e| {
         error!("save worker crashed: {e:#}");
     }); // wait for save worker, unwrap if ok (flatten())
 
@@ -115,7 +116,7 @@ fn register_logging(level: Option<Level>) -> Result<()> {
     tracing::subscriber::set_global_default(subscriber).context("setting default subscriber failed")
 }
 
-#[instrument]
+#[tracing::instrument]
 fn start_check_stale_worker(connections: ClientMap, interval: Duration, abort_handler: AbortHandler) -> JoinHandle<()> {
     use tokio::time::interval as new_interval;
     let mut interval = new_interval(interval);
@@ -185,7 +186,7 @@ fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHa
                     Ok(packet) => packet,
                     Err(e @ TryRecvError::Disconnected) => {
                         info!("save_channel.try_recv(): Disconnected => break out of loop");
-                        return Err(Error::new(e).context("save_channel"));
+                        return Err(Report::new(e).wrap_err("save_channel"));
                     }
                     Err(TryRecvError::Empty) => {
                         trace!("save_channel.try_recv(): Empty => sleep 100ms");
@@ -197,75 +198,21 @@ fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHa
                 trace!("try_recv(): Ok(packet) => process…");
                 Span::current().record("measured_when", format!("{:?}", packet.time));
 
-                let filename = path.join(format!("{date}.{SAVE_FILE_EXT}", date = packet.time.format("%Y-%m-%d")));
-                Span::current().record("target_file", filename.to_string_lossy().as_ref());
+                let basename = format!("{date}", date = packet.time.format("%Y-%m-%d"));
 
                 // if file exists but some parsing/reading error occurs, append digit and try again.
-                let (filename, mut all_objects) = {
-                    let stream = tokio_stream::iter(0_usize..)
-                        .then(|counter| {
-                            let filename = filename.clone();
-                            async move {
-                                let filename = if counter == 0 {
-                                    filename
-                                } else {
-                                    filename.with_file_name(format!(
-                                        "{}.{counter}.{SAVE_FILE_EXT}",
-                                        filename
-                                            .file_stem()
-                                            .ok_or(anyhow!("no file stem on {filename:?}? wtf"))?
-                                            .to_string_lossy()
-                                    ))
-                                };
+                let (save_file, mut all_objects) = handle_corrupted_json::<Vec<Measurement>>(&path, &basename, SAVE_FILE_EXT).await;
+                Span::current().record("target_file", &save_file.to_string_lossy().into_owned());
 
-                                if !filename.exists() {
-                                    // all existing files errored, so we return a fresh start (to keep writing)
-                                    return Ok((filename, Vec::new()));
-                                }
-
-                                if filename.exists() && !filename.is_file() {
-                                    error!(
-                                        "WTF. Don't go creating non-regulare file objects like {}. Failed to save JSON, exiting…",
-                                        filename.to_string_lossy()
-                                    );
-                                    bail!("tried to save to {} but it was a non-regular file", filename.to_string_lossy());
-                                }
-
-                                let mut brotli = async_compression::tokio::bufread::BrotliDecoder::new(BufReader::new(File::open(&filename).await?));
-                                let mut buf = String::new();
-                                brotli.read_to_string(&mut buf).await.context("reading DataObject JSON file")?;
-
-                                Ok((
-                                    filename,
-                                    serde_json::from_str::<Vec<Measurement>>(&buf).context("parsing DataObject JSON (from file)")?,
-                                ))
-                            }
-                        })
-                        .filter_map(|result| {
-                            std::future::ready(match result {
-                                Ok(val) => Some(val),
-                                Err(e) => {
-                                    warn!("{e:#}: Save file defective, skipping to next…");
-                                    None
-                                }
-                            })
-                        });
-
-                    pin_mut!(stream);
-                    stream
-                        .next()
-                        .await
-                        .ok_or_else(|| anyhow!("Couldn't find a suitable save file (or fallback thereof).\n\n…FML dafuq?!"))?
-                };
                 all_objects.push(packet);
 
-                let writer = File::create(filename).await.context("opening DataObject JSON (2nd time, for writing)")?;
+                let writer = File::create(basename).await.context("opening DataObject JSON (2nd time, for writing)")?;
                 let mut writer = BrotliEncoder::with_quality(BufWriter::new(writer), async_compression::Level::Precise(9));
                 writer
                     .write_all(&serde_json::to_vec_pretty(&all_objects)?)
                     .await
                     .context("writing (updated) DataObject JSON")?;
-                // TODO tokio fs is _the horror_, BufWrite drops remaining bytes on drop. build wrapper to ensure these shutdown instructions are always honed.
+                // TODO (maybe) tokio fs is _the horror_, BufWrite drops remaining bytes on drop. build wrapper to ensure these shutdown instructions are always honed.
                 writer.flush().await?;
                 writer.shutdown().await?;
 
@@ -285,7 +232,51 @@ fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHa
     Ok((handle, tx))
 }
 
-#[instrument]
+#[tracing::instrument]
+async fn handle_corrupted_json<DeserT: Default + for<'a> Deserialize<'a>>(dir: &Path, basename: &str, ext: &str) -> (PathBuf, DeserT) {
+    // TODO (unlikely) pull out try_reading() as closure parameter. Then this would be truly generic.
+    async fn try_reading<DeserT: for<'a> Deserialize<'a>>(filename: &Path) -> Result<DeserT> {
+        let desert_type = std::any::type_name::<DeserT>();
+
+        let mut brotli = async_compression::tokio::bufread::BrotliDecoder::new(BufReader::new(File::open(filename).await?));
+        let mut buf = String::new();
+        brotli
+            .read_to_string(&mut buf)
+            .await
+            .wrap_err_with(|| format!("reading {desert_type} JSON file"))?;
+
+        Ok(serde_json::from_str::<DeserT>(&buf).wrap_err_with(|| format!("parsing {desert_type} JSON (from file)"))?)
+    }
+
+    let desert_type = std::any::type_name::<DeserT>();
+
+    let mut counter: u16 = 0;
+    let mut json_path = dir.join(format!("{basename}.{ext}"));
+
+    loop {
+        if !json_path.exists() {
+            return (json_path, DeserT::default());
+        }
+
+        match try_reading(&json_path).await {
+            Ok(json) => return (json_path, json),
+            Err(e) => {
+                error!("Attempt #{counter} at reading `{desert_type}` JSON … failed! {e:#}");
+            }
+        }
+
+        // gen path befor inc counter, so we can have base.ext => base.0.ext => base.1.ext => …
+        json_path = dir.join(format!("{basename}.{counter}.{ext}"));
+        counter = counter.checked_add(1).unwrap_or_else(|| {
+            panic!(
+                "u16 overflow on `{json_path:?}` (appearently I've tried {} times :surprised_pikachu:)",
+                u16::MAX
+            )
+        });
+    }
+}
+
+#[tracing::instrument]
 async fn update_last_recv(client_addr: SocketAddr, client_map: &mut ClientMap) -> Result<()> {
     let mut client_map = client_map.lock().await;
     client_map.entry(client_addr).or_default().update_last_recv();
@@ -316,38 +307,132 @@ impl AbortHandler {
     }
 }
 
-/*fn collect(data_dir: impl AsRef<Path>) -> Result<()> {
-    let dataset: HashMap<_, _> = [(
-        "sacct",
-        collect::collect_sacct_json().unwrap_or_else(|e| {
-            eprintln!("Couldn't collect `sacct`: {e}");
-            "".to_owned()
-        }),
-    )]
-    .into_iter()
-    .collect();
+#[cfg(test)]
+#[allow(non_snake_case)]
+mod tests {
+    use super::*;
+    use brotli;
+    use std::fs::OpenOptions;
+    use std::io::{self, Write};
+    use tempfile::tempdir;
 
-    for (what, data) in dataset.iter() {
-        let filename = data_dir.as_ref().join(gen_filename(what));
-        let mut file = File::create_new(filename)?;
-        file.write_all(data.as_bytes())?;
+    fn create_mock_json_br(file_path: &str, content: &str) -> io::Result<()> {
+        let file = OpenOptions::new().write(true).create(true).truncate(true).open(file_path)?;
+        let mut encoder = brotli::CompressorWriter::new(file, 4096, 5, 22);
+        encoder.write_all(content.as_bytes())
     }
 
-    Ok(())
-}o/
+    #[tokio::test]
+    async fn handle_corrupted_json__once() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let (dir, base, ext) = (temp_dir.path(), "2024-12-01", "json.br");
+        let corrupted_content = "{ invalid_json: ,}";
 
-fn gen_filename(what: &str) -> String {
-    let datetime = chrono::Local::now().format("%Y_%m_%d__%H_%M_%S_%3f");
-    format!("{datetime}__{what}.json")
-}
+        // Create a corrupted JSON file
+        create_mock_json_br(&format!("{dir}/{base}.{ext}", dir = dir.to_str().unwrap()), corrupted_content)?;
 
-fn setup(args: &Args) -> Result<()> {
-    // test data dir
-    if !args.data_dir.exists() {
-        std::fs::create_dir_all(&args.data_dir).context("creating data dir")?;
+        // Simulate reading failure by calling the function
+        let (result, _) = handle_corrupted_json::<()>(dir, base, ext).await;
+
+        // Check if the new file was created with suffix .0.json.br
+        let new_file_path = temp_dir.path().join("2024-12-01.0.json.br");
+        assert_eq!(new_file_path, result);
+        Ok(())
     }
-    ensure!(args.data_dir.exists() && args.data_dir.is_dir());
 
-    Ok(())
+    #[tokio::test]
+    async fn handle_corrupted_json__multiple() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let (dir, base, ext) = (temp_dir.path(), "2024-12-02", "json.br");
+        let corrupted_content = "{ invalid_json: ,}";
+
+        // Simulate multiple failures, incrementing suffix each time
+        create_mock_json_br(&format!("{dir}/{base}.{ext}", dir = dir.to_str().unwrap()), corrupted_content)?;
+        create_mock_json_br(&format!("{dir}/{base}.0.{ext}", dir = dir.to_str().unwrap()), corrupted_content)?;
+        create_mock_json_br(&format!("{dir}/{base}.1.{ext}", dir = dir.to_str().unwrap()), corrupted_content)?;
+
+        // handle_corrupted_json() should detect and skip every corrupt file
+        let (result, _) = handle_corrupted_json::<()>(dir, base, ext).await;
+
+        // Check if the second corrupted file was renamed to .2.json.br
+        let new_file_path = temp_dir.path().join("2024-12-02.2.json.br");
+        assert_eq!(new_file_path, result);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn handle_corrupted_json__no_corruption() -> Result<()> {
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct ValidContent {
+            pub valid_json: bool,
+        }
+        let temp_dir = tempdir()?;
+        let (dir, base, ext) = (temp_dir.path(), "2024-12-03", "json.br");
+        let file_path_str = format!("{dir}/{base}.{ext}", dir = dir.to_str().unwrap());
+        let valid_content = "[{ \"valid_json\": true }]";
+
+        // Create a valid JSON file
+        create_mock_json_br(&file_path_str, &valid_content)?;
+
+        // Simulate reading success, should not trigger renaming
+        let (result, parsed_data) = handle_corrupted_json::<Vec<ValidContent>>(dir, base, ext).await;
+
+        // Ensure the original file still exists
+        assert!(Path::new(&file_path_str).exists());
+        assert_eq!(Path::new(&file_path_str), result);
+        assert_eq!(parsed_data, vec![ValidContent { valid_json: true }]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn handle_corrupted_json__mixed_files() -> Result<()> {
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct ValidContent {
+            pub valid_json: bool,
+        }
+
+        let temp_dir = tempdir()?;
+        let (dir, base, ext) = (temp_dir.path(), "2024-12-04", "json.br");
+        let corrupted_content = "{ invalid_json: ,}";
+        let valid_content = r#"[{ "valid_json": true }]"#;
+
+        // Create a sequence of corrupted JSON files
+        create_mock_json_br(&format!("{dir}/{base}.{ext}", dir = dir.to_str().unwrap()), corrupted_content)?;
+        create_mock_json_br(&format!("{dir}/{base}.0.{ext}", dir = dir.to_str().unwrap()), corrupted_content)?;
+
+        // Create a valid JSON file at the third iteration
+        create_mock_json_br(&format!("{dir}/{base}.1.{ext}", dir = dir.to_str().unwrap()), valid_content)?;
+
+        // Call the function
+        let (result, parsed_data) = handle_corrupted_json::<Vec<ValidContent>>(dir, base, ext).await;
+
+        // The function should return the valid file path
+        let expected_file_path = temp_dir.path().join(format!("{base}.1.{ext}"));
+        assert_eq!(expected_file_path, result);
+        assert!(expected_file_path.exists());
+
+        // The parsed content should match the valid JSON structure
+        assert_eq!(parsed_data, vec![ValidContent { valid_json: true }]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "u16 overflow")]
+    async fn handle_corrupted_json__u16_max_panic_SLOW() {
+        let temp_dir = tempdir().unwrap();
+        let (dir, base, ext) = (temp_dir.path(), "2024-12-05", "json.br");
+        let corrupted_content = "{ invalid_json: ,}";
+
+        // base JSON
+        create_mock_json_br(dir.join(format!("{base}.{ext}")).to_str().unwrap(), corrupted_content).unwrap();
+        // Create u16::MAX corrupted JSON files
+        for i in 0..=u16::MAX {
+            let base = format!("{base}.{i}.{ext}");
+            let file_path = dir.join(base);
+            create_mock_json_br(file_path.to_str().unwrap(), corrupted_content).unwrap();
+        }
+
+        // This should panic due to u16 overflow
+        let _ = handle_corrupted_json::<()>(dir, base, ext).await;
+    }
 }
-*/

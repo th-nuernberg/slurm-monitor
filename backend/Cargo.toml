@@ -4,12 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anyhow = { version = "1.0.86", features = ["backtrace"] }
 async-compression = { version = "0.4.17", features = ["brotli", "tokio"] }
 
 chrono = { version = "0.4.38", features = ["serde"] }
 clap = { version = "4.5.7", features = ["derive", "wrap_help", "unicode"] }
 collector_data = { version = "0.1.0", path = "../collector_data" }
+color-eyre = "0.6.3"
 flate2 = "1.0.34"
 futures = "0.3.30"
 itertools = "0.13.0"
@@ -34,3 +34,7 @@ tracing-timing = "0.6.0"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+brotli = "7.0.0"
+tempfile = "3.14.0"

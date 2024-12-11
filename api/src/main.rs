@@ -1,3 +1,5 @@
+pub mod data;
+
 use std::{
     borrow::BorrowMut,
     collections::HashMap,
@@ -9,23 +11,22 @@ use std::{
 };
 
 use async_compression::tokio::bufread::BrotliDecoder;
-use async_trait::async_trait;
-use chrono::{Date, DateTime, FixedOffset, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use clap::Parser;
 use collector_data::{
     gpu::GpuUsage,
     monitoring_info::{Measurement, MonitorInfo},
 };
 use color_eyre::{
-    eyre::{bail, ensure, eyre, Context},
-    Report, Result, Section,
+    eyre::{ensure, eyre, Context},
+    Report, Result,
 };
-use derive_getters::Getters;
-use futures::{FutureExt as _, TryFutureExt as _};
-use itertools::Itertools;
-use poem::{http::StatusCode, listener::TcpListener, Endpoint, EndpointExt, FromRequest, IntoResponse, Response, ResponseBuilder, Route, Server};
+use data::GpuHoursPerUser;
+use futures::TryFutureExt as _;
+use itertools::Itertools as _;
+use poem::{http::StatusCode, listener::TcpListener, Response, Route, Server};
 use poem_openapi::{
-    param::{Header, Query},
+    param::{Header, Path as PathParam, Query},
     payload::{Json, PlainText},
     types::{ParseFromJSON, ParseFromParameter, ToJSON, Type},
     NewType, OpenApi, OpenApiService,
@@ -82,22 +83,23 @@ impl Api {
         Ok(Json(json))
     }
 
-    #[tracing::instrument(skip_all, fields(name = name.0))]
-    #[oai(path = "/hello", method = "get")]
-    async fn index(&self, name: Query<Option<String>>) -> PlainText<String> {
-        match name.0 {
+    //#[tracing::instrument(skip_all, fields(name = name.0))]
+    #[oai(path = "/hello/:user", method = "get")]
+    async fn index(&self, user: PathParam<Option<String>>) -> PlainText<String> {
+        match user.0 {
             Some(name) => PlainText(format!("Hello, {name}!")),
             None => PlainText(format!("Hello!")),
         }
     }
 
-    #[oai(path = "/gpu_usage", method = "get")]
-    async fn gpu_usage(
+    #[oai(path = "/gpu_usage/reserved/:user", method = "get", actual_type = "Json<Vec<GpuHoursPerUser>>")]
+    async fn gpu_usage_reserved_for_user(
         &self,
+        user: PathParam<String>,
         start: Query<Option<DateTime<Utc>>>,
         end: Query<Option<DateTime<Utc>>>,
         limit: Query<Option<usize>>,
-    ) -> Result<Json<serde_json::Value>, poem::Error> {
+    ) -> Result<Json<Vec<GpuHoursPerUser>>, poem::Error> {
         let measurements = self.get_data().await;
         let gpu_usage_by_job: Vec<HashMap<String, Vec<&GpuUsage>>> = Self::filter_data(&*measurements, start, end, limit)
             .filter_map(|Measurement { time: _, state }| match state {
@@ -113,7 +115,12 @@ impl Api {
             })
             .collect_vec();
 
-        Self::return_json(gpu_usage_by_job)
+        Err(poem::Error::from_response(
+            Response::builder()
+                .status(StatusCode::NOT_IMPLEMENTED)
+                .body("unimplemented while changing data structures to `sreport`"),
+        ))
+        //Ok(Json(gpu_usage_by_job))
     }
 
     #[oai(path = "/all", method = "get")]

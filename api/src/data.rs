@@ -1,12 +1,10 @@
-use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use derive_more::derive::{Add, Deref, Display, FromStr, Into, Sub};
 use poem_openapi::{
-    types::{ToJSON, Type},
-    NewType, Object, ResponseContent,
+    types::Type,
+    NewType, Object,
 };
-use serde::Serialize;
 
 /*
 NOTE HashMaps don't seem to work with poem_openapi ._________.

@@ -1,10 +1,8 @@
 pub mod data;
 
 use std::{
-    borrow::BorrowMut,
     collections::HashMap,
-    future::IntoFuture,
-    ops::{Deref, Range},
+    ops::Deref,
     path::{Path, PathBuf},
     sync::Arc,
     usize,
@@ -18,7 +16,7 @@ use collector_data::{
     monitoring_info::{Measurement, MonitorInfo},
 };
 use color_eyre::{
-    eyre::{ensure, eyre, Context},
+    eyre::{ensure, Context},
     Report, Result,
 };
 use data::GpuHoursPerUser;
@@ -26,13 +24,10 @@ use futures::TryFutureExt as _;
 use itertools::Itertools as _;
 use poem::{http::StatusCode, listener::TcpListener, Response, Route, Server};
 use poem_openapi::{
-    param::{Header, Path as PathParam, Query},
-    payload::{Json, PlainText},
-    types::{ParseFromJSON, ParseFromParameter, ToJSON, Type},
-    NewType, OpenApi, OpenApiService,
+    param::{Path as PathParam, Query},
+    payload::{Json, PlainText}, OpenApi, OpenApiService,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde::Serialize;
 use tokio::{
     fs::File,
     io::{AsyncReadExt, BufReader},
@@ -88,7 +83,7 @@ impl Api {
     async fn index(&self, user: PathParam<Option<String>>) -> PlainText<String> {
         match user.0 {
             Some(name) => PlainText(format!("Hello, {name}!")),
-            None => PlainText(format!("Hello!")),
+            None => PlainText("Hello!".to_string()),
         }
     }
 
@@ -201,7 +196,7 @@ async fn main() -> Result<()> {
 #[tracing::instrument]
 async fn load_datafile(data: Data, file: &Path) -> Result<NaiveDate> {
     // because there shouldn't be unrecognizable files inside `data_dir`
-    let date = collector_data::parse_filename(&file).with_context(|| {
+    let date = collector_data::parse_filename(file).with_context(|| {
         format!(
             "checking if {file}'s name is in datafile format (collector_data::parse…) ",
             file = file.to_string_lossy()
@@ -222,7 +217,7 @@ async fn load_datafile(data: Data, file: &Path) -> Result<NaiveDate> {
         // Arc is immutable, so clone hash table from inside RwLockGuard and Arc so that we can mutate (insert) the new file
         // (mem::take would be nice so we don't have to clone, but then we can't use Arc and let API functions hold the data while it not being locked. Would be a trade-off)
         let mut local_data = (**global_data).clone();
-        local_data.insert(date, measurements.into());
+        local_data.insert(date, measurements);
         // then, swap our table with the global one
         *global_data = Arc::new(local_data)
         //&**x = Arc::new(local_hashtable)

@@ -1,4 +1,4 @@
-use chrono::{self, DateTime, Duration, Utc};
+use chrono::{self, DateTime, Duration, Local, Utc};
 use color_eyre::eyre::{bail, ensure, eyre, Context};
 use color_eyre::{Result, Section as _, SectionExt};
 use derive_more::derive::{Add, AddAssign, Deref, Display, Into, Sub, SubAssign};
@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use std::process::Command;
 use std::{collections::HashMap, ops::Range};
 use sysinfo::{PidExt, System, SystemExt};
+
+use crate::slurm::{self, format_datetime_for_slurm, SlurmUser};
 
 use super::job::Job;
 
@@ -162,7 +164,7 @@ impl GpuUsage {
 pub struct GpuTimeReportedBySlurm(Duration);
 
 #[derive(Debug, Clone, Deref, Into)]
-pub struct AllGpuTimesReportedBySlurm(HashMap<String, GpuTimeReportedBySlurm>);
+pub struct AllGpuTimesReportedBySlurm(HashMap<SlurmUser, GpuTimeReportedBySlurm>);
 
 impl AllGpuTimesReportedBySlurm {
     /// Cluster|Account|Login|Proper Name|TRES Name|Used
@@ -174,7 +176,6 @@ impl AllGpuTimesReportedBySlurm {
     /// }
     /// }
     pub fn query(when: Range<DateTime<Utc>>) -> Result<Self> {
-        const TIMESTAMP_FMT: &str = "%+"; // 2001-07-08T00:34:60.026490+09:30, _with timezone_
         let sreport = Command::new("sreport")
             .args(["--noheader", "--parsable2" /* sep by `|` without trailing `|`*/])
             .args(["-t", "Seconds"])
@@ -182,8 +183,8 @@ impl AllGpuTimesReportedBySlurm {
             .arg("cluster")
             .arg("UserUtilizationByAccount") // TODO wenn acc total auch zählen, => AccountUtilizationByUser
             .args([
-                &format!("start={}", when.start.format(TIMESTAMP_FMT)),
-                &format!("end={}", when.end.format(TIMESTAMP_FMT)),
+                &format!("start={}", format_datetime_for_slurm(when.start.with_timezone(&Local))),
+                &format!("end={}", format_datetime_for_slurm(when.end.with_timezone(&Local))),
             ])
             .arg("format=Login,Used") // username|time_used
             .output()?;
@@ -203,7 +204,7 @@ impl AllGpuTimesReportedBySlurm {
                     let fields = line.split('|').collect_vec();
                     match fields.as_slice() {
                         &[username, secs_reserved] => Ok((
-                            username.to_owned(),
+                            SlurmUser(username.to_owned()),
                             GpuTimeReportedBySlurm(Duration::seconds(
                                 secs_reserved.parse::<i64>().wrap_err_with(|| format!("line {i}, parsing seconds"))?,
                             )),

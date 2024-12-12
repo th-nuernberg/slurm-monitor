@@ -2,9 +2,12 @@ pub mod data;
 
 use std::{
     collections::HashMap,
-    ops::Deref,
+    convert::Infallible,
+    fmt::Display,
+    ops::{Deref, Range},
     path::{Path, PathBuf},
     sync::Arc,
+    time::UNIX_EPOCH,
     usize,
 };
 
@@ -13,6 +16,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use clap::Parser;
 use collector_data::{
     gpu::GpuUsage,
+    gpu_dep::AllGpuTimesReportedBySlurm,
     monitoring_info::{Measurement, MonitorInfo},
 };
 use color_eyre::{
@@ -22,10 +26,11 @@ use color_eyre::{
 use data::GpuHoursPerUser;
 use futures::TryFutureExt as _;
 use itertools::Itertools as _;
-use poem::{http::StatusCode, listener::TcpListener, Response, Route, Server};
+use poem::{http::StatusCode, listener::TcpListener, Endpoint as _, EndpointExt, Response, Route, Server};
 use poem_openapi::{
     param::{Path as PathParam, Query},
-    payload::{Json, PlainText}, OpenApi, OpenApiService,
+    payload::{Json, PlainText},
+    OpenApi, OpenApiService,
 };
 use serde::Serialize;
 use tokio::{
@@ -34,7 +39,7 @@ use tokio::{
     join,
     sync::RwLock,
 };
-use tracing::{error, info, level_filters::LevelFilter};
+use tracing::{debug, error, info, level_filters::LevelFilter};
 
 // TODO thread that periodically (30sec? on change?) reloads a data file if it is updated (may need locking)
 
@@ -47,7 +52,7 @@ struct Api {
 #[OpenApi]
 impl Api {
     // TODO limit currently applies _before_ filtering. That might be counterintuitive.
-    fn into_500(error: impl std::fmt::Display) -> poem::Error {
+    fn err_into_500(error: impl std::fmt::Display) -> poem::Error {
         error!("Error generated during API call: {error:#}");
         poem::Error::from_string(format!("{error:#}"), StatusCode::INTERNAL_SERVER_ERROR)
     }
@@ -69,11 +74,15 @@ impl Api {
             })
             .take(limit.unwrap_or(usize::MAX))
     }
-    fn return_json<T: Serialize>(data: T) -> Result<Json<serde_json::Value>, poem::Error> {
+    fn return_json<T, E>(data: Result<T, E>) -> Result<Json<serde_json::Value>, poem::Error>
+    where
+        T: Serialize,
+        E: Display,
+    {
         // TODO spawn_blocking would be better, but problem with 'static and internal refs inside data (I believe)
-        let json = /*spawn_blocking(move ||*/ serde_json::to_value(&data).map_err(Self::into_500)/*)
+        let json = /*spawn_blocking(move ||*/ serde_json::to_value(&data.map_err(Self::err_into_500)?)/*)
             .await*/
-            .map_err(Self::into_500)?/*?*/;
+            .map_err(Self::err_into_500)?/*?*/;
 
         Ok(Json(json))
     }
@@ -87,36 +96,32 @@ impl Api {
         }
     }
 
-    #[oai(path = "/gpu_usage/reserved/:user", method = "get", actual_type = "Json<Vec<GpuHoursPerUser>>")]
-    async fn gpu_usage_reserved_for_user(
+    /// Report total hours of GPU time that SLURM has allocated to users in the specified time range.
+    ///
+    /// Returns gpu hours per user, as a map `{"user1": 1.6666, "user2": 234.5}`. Hours are floats, calculated from the seconds that SLURM reports.
+    /// `start` and `end` default to [`UNIX_EPOCH`] and [`now()`], respectively
+    ///
+    /// This queries `sreport` live for every query (a in-memory cache is planned).
+    #[oai(path = "/gpu_hours/reserved", method = "get")]
+    async fn gpu_hours_reserved(
         &self,
-        user: PathParam<String>,
         start: Query<Option<DateTime<Utc>>>,
         end: Query<Option<DateTime<Utc>>>,
-        limit: Query<Option<usize>>,
-    ) -> Result<Json<Vec<GpuHoursPerUser>>, poem::Error> {
-        let measurements = self.get_data().await;
-        let gpu_usage_by_job: Vec<HashMap<String, Vec<&GpuUsage>>> = Self::filter_data(&*measurements, start, end, limit)
-            .filter_map(|Measurement { time: _, state }| match state {
-                collector_data::monitoring_info::State::Initial(_) => None, // TODO maybe use static data (to find out about installed GPUs or sth)
-                collector_data::monitoring_info::State::Current(MonitorInfo {
-                    jobs: _,
-                    node_usages: _,
-                    cpu_usages: _,
-                    gpu_usages,
-                }) => Some(gpu_usages.iter().into_group_map_by(
-                    |usage| usage.job_id.clone().unwrap_or_default(), // empty string in JSON instead of Option::None
-                )),
-            })
-            .collect_vec();
+    ) -> Result<Json<serde_json::Value>, poem::Error> {
+        // TODO cache result (1h ttl or so)
+        let start = start.unwrap_or(DateTime::<Utc>::UNIX_EPOCH);
+        let end = end.unwrap_or_else(|| Utc::now());
+        let hashmap: Result<_> = AllGpuTimesReportedBySlurm::query(start..end).map(|gpu_times| {
+            HashMap::from(gpu_times)
+                .into_iter()
+                .map(|(user, duration)| (user, duration.num_seconds() as f64 / 3600f64))
+                .collect::<HashMap<_, _>>()
+        });
 
-        Err(poem::Error::from_response(
-            Response::builder()
-                .status(StatusCode::NOT_IMPLEMENTED)
-                .body("unimplemented while changing data structures to `sreport`"),
-        ))
-        //Ok(Json(gpu_usage_by_job))
+        Self::return_json(hashmap)
     }
+
+    //user: PathParam<String>,
 
     #[oai(path = "/all", method = "get")]
     async fn all(
@@ -127,7 +132,7 @@ impl Api {
     ) -> Result<Json<serde_json::Value>, poem::Error> {
         let data = self.get_data().await;
 
-        Self::return_json(Self::filter_data(&*data, start, end, limit).collect_vec())
+        Self::return_json::<_, Infallible>(Ok(Self::filter_data(&*data, start, end, limit).collect_vec()))
     }
 }
 
@@ -183,7 +188,12 @@ async fn main() -> Result<()> {
 
     let api_service = OpenApiService::new(Api { data: data.clone() }, "Hello World", "1.0").server(format!("http://{SERVER_ADDR}"));
     let ui = api_service.swagger_ui();
-    let app = Route::new().nest("/", api_service).nest("/docs", ui);
+    let app = Route::new().nest("/", api_service).nest("/docs", ui).around(|route, request| async move {
+        // request logging middleware
+        debug!(?request, "received request");
+        let response = route.call(request).await;
+        response
+    });
 
     let server = Server::new(TcpListener::bind(SERVER_ADDR));
     let (server_result, data_result) = join!(server.run(app), data_future);
@@ -193,7 +203,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-#[tracing::instrument]
+#[tracing::instrument(skip(data))]
 async fn load_datafile(data: Data, file: &Path) -> Result<NaiveDate> {
     // because there shouldn't be unrecognizable files inside `data_dir`
     let date = collector_data::parse_filename(file).with_context(|| {
@@ -204,7 +214,7 @@ async fn load_datafile(data: Data, file: &Path) -> Result<NaiveDate> {
     })?;
     let mut reader = BrotliDecoder::new(BufReader::new(File::open(&file).await?));
     let mut buf = Vec::new();
-    dbg!(reader.read_to_end(&mut buf).await.wrap_err_with(|| format!("reading {file:?}"))?);
+    reader.read_to_end(&mut buf).await.wrap_err_with(|| format!("reading {file:?}"))?;
     let input = String::from_utf8_lossy(&buf).into_owned();
     //trace!("buf=`{buf:?}`");
     let measurements: Vec<Measurement> = serde_json::from_str(&input).wrap_err_with(|| format!("parsing {file:?}"))?;
@@ -226,7 +236,7 @@ async fn load_datafile(data: Data, file: &Path) -> Result<NaiveDate> {
     Ok(date)
 }
 
-#[tracing::instrument]
+#[tracing::instrument(skip(data))]
 async fn load_data(data: Data, data_dir: &Path) -> Result<Vec<Report>> {
     ensure!(data_dir.is_dir());
 
@@ -245,6 +255,7 @@ async fn load_data(data: Data, data_dir: &Path) -> Result<Vec<Report>> {
             }
         }
     }
+    info!("finished loading.");
 
     Ok(errors)
 }

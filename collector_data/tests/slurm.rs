@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{Duration, Utc};
 use color_eyre::Result;
 
 fn are_we_on_slurm_machine() -> bool {

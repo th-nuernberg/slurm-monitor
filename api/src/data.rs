@@ -1,10 +1,6 @@
-
 use chrono::{DateTime, Utc};
 use derive_more::derive::{Add, Deref, Display, FromStr, Into, Sub};
-use poem_openapi::{
-    types::Type,
-    NewType, Object,
-};
+use poem_openapi::{types::Type, NewType, Object};
 
 /*
 NOTE HashMaps don't seem to work with poem_openapi ._________.

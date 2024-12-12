@@ -1,3 +1,8 @@
+# Discuss
+- sreport gibt auch total für Acc, nicht nur für alle user des accs. *relevant?*
+  - https://slurm.schedmd.com/sreport.html#OPT_cluster-AccountUtilizationByUser
+- slurm befehle nehmen timestamps in UTC oder Local?
+- binary size wichtig? strip = kleine file size <-> keine backtraces
 
 # NEXT
 - update README

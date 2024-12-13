@@ -8,6 +8,7 @@ use client::ClientMap;
 use collector_data::monitoring_info::Measurement;
 use color_eyre::eyre::{bail, eyre, Context, Report, Result};
 use futures::{join, pin_mut, StreamExt as _, TryFutureExt as _};
+use itertools::Itertools;
 use serde::Deserialize;
 use std::{
     collections::HashMap,
@@ -34,6 +35,8 @@ use tracing::{debug, debug_span, error, field, info, instrument, span, trace, wa
 
 const CHECK_STALE_INTERVAL: Duration = Duration::from_secs(5);
 const SAVE_FILE_EXT: &str = "json.br";
+const MAX_SAVE_PACKETS_AT_ONCE: usize = 1024;
+const BROTLI_LEVEL: i32 = 5; // only like 10% worse than 9 while taking 35% of the time
 
 /// `whorker_threads`: only workers for async tasks (tokio::spawn, main). spawn_blocking spawns extra threads
 #[tokio::main(worker_threads = 4)]
@@ -182,46 +185,73 @@ fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHa
                 /*let Some(packet): Option<DataObject> = rx.recv().await else {
                     return Ok(());
                 };*/
-                let packet: Measurement = match rx.try_recv() {
-                    Ok(packet) => packet,
-                    Err(e @ TryRecvError::Disconnected) => {
-                        info!("save_channel.try_recv(): Disconnected => break out of loop");
-                        return Err(Report::new(e).wrap_err("save_channel"));
+                let mut recv_buf: Vec<Measurement> = Vec::with_capacity(rx.len()); // we don't need packages from the previous iter, `recv_many` doesn't clear.
+
+                // unfortunately `recv_many` blocks on empty channel and has clunky behaviour overall
+                loop {
+                    match rx.try_recv() {
+                        Ok(packet) => recv_buf.push(packet),
+                        Err(TryRecvError::Disconnected) => {
+                            // only an error if program was not aborted
+                            if abort_handler.abort() {
+                                return Ok(());
+                            } else {
+                                bail!("channel closed")
+                            }
+                        }
+                        Err(TryRecvError::Empty) => break,
                     }
-                    Err(TryRecvError::Empty) => {
-                        trace!("save_channel.try_recv(): Empty => sleep 100ms");
-                        sleep(Duration::from_millis(100)).await;
-                        return Ok(()); // == continue;
+                }
+                let num_packets = recv_buf.len();
+                let measurements = recv_buf.into_iter().into_group_map_by(|measurement| measurement.time.date_naive());
+
+                for (idx, (date, mut packets)) in measurements.into_iter().enumerate() {
+                    debug_assert!(packets.iter().all(|m| m.time.date_naive() == date));
+
+                    trace!("try_recv(): Ok(packet) => process…");
+                    if idx == 0 {
+                        if let Some(packet) = packets.first() {
+                            Span::current().record("when_first", format!("{:?}", packet.time));
+                        }
                     }
-                };
+                    if idx == num_packets {
+                        if let Some(packet) = packets.last() {
+                            Span::current().record("when_last", format!("{:?}", packet.time));
+                        }
+                    }
 
-                trace!("try_recv(): Ok(packet) => process…");
-                Span::current().record("measured_when", format!("{:?}", packet.time));
+                    let basename = format!("{date}", date = date.format("%Y-%m-%d"));
 
-                let basename = format!("{date}", date = packet.time.format("%Y-%m-%d"));
+                    // if file exists but some parsing/reading error occurs, append digit and try again.
+                    let (save_file, mut all_objects) = handle_corrupted_json::<Vec<Measurement>>(&path, &basename, SAVE_FILE_EXT).await;
+                    Span::current().record("target_file", &save_file.to_string_lossy().into_owned());
 
-                // if file exists but some parsing/reading error occurs, append digit and try again.
-                let (save_file, mut all_objects) = handle_corrupted_json::<Vec<Measurement>>(&path, &basename, SAVE_FILE_EXT).await;
-                Span::current().record("target_file", &save_file.to_string_lossy().into_owned());
+                    all_objects.append(&mut packets);
 
-                all_objects.push(packet);
+                    let writer = File::create(basename).await.context("opening DataObject JSON (2nd time, for writing)")?;
+                    let mut writer = BrotliEncoder::with_quality(BufWriter::new(writer), async_compression::Level::Precise(BROTLI_LEVEL));
+                    writer
+                        .write_all(&serde_json::to_vec_pretty(&all_objects)?)
+                        .await
+                        .context("writing (updated) DataObject JSON")?;
+                    // TODO (maybe) tokio fs is _the horror_, BufWrite drops remaining bytes on drop. build wrapper to ensure these shutdown instructions are always honed.
+                    writer.flush().await?;
+                    writer.shutdown().await?;
+                }
 
-                let writer = File::create(basename).await.context("opening DataObject JSON (2nd time, for writing)")?;
-                let mut writer = BrotliEncoder::with_quality(BufWriter::new(writer), async_compression::Level::Precise(9));
-                writer
-                    .write_all(&serde_json::to_vec_pretty(&all_objects)?)
-                    .await
-                    .context("writing (updated) DataObject JSON")?;
-                // TODO (maybe) tokio fs is _the horror_, BufWrite drops remaining bytes on drop. build wrapper to ensure these shutdown instructions are always honed.
-                writer.flush().await?;
-                writer.shutdown().await?;
-
-                debug!("successfully updated DataObjects");
+                if num_packets == 0 {
+                    debug!("no packets received, sleeping for 2min");
+                } else {
+                    debug!("successfully updated DataObjects, sleeping for 2min");
+                }
+                sleep(Duration::from_secs(120)).await;
                 Ok(())
             }
             .instrument(debug_span!(
                 "save_worker inner loop",
-                measured_when = field::Empty,
+                num_packets = field::Empty,
+                when_first = field::Empty,
+                when_last = field::Empty,
                 target_file = field::Empty
             ))
             .await?

@@ -173,6 +173,7 @@ dependencies = [
  "poem-openapi",
  "serde",
  "serde_json",
+ "smol_str",
  "test-log",
  "thiserror 2.0.3",
  "tokio",
@@ -182,9 +183,9 @@ dependencies = [
 
 [[package]]
 name = "async-compression"
-version = "0.4.17"
+version = "0.4.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0cb8f1d480b0ea3783ab015936d2a55c87e219676f0c0b7dec61494043f21857"
+checksum = "df895a515f70646414f4b45c0b79082783b80552b373a68283012928df56f522"
 dependencies = [
  "brotli",
  "futures-core",
@@ -295,7 +296,6 @@ dependencies = [
  "flate2",
  "futures",
  "itertools",
- "native_db",
  "serde",
  "serde_json",
  "signal-hook",
@@ -368,6 +368,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
 dependencies = [
  "generic-array",
+]
+
+[[package]]
+name = "borsh"
+version = "1.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2506947f73ad44e344215ccd6403ac2ae18cd8e046e581a441bf8d199f257f03"
+dependencies = [
+ "cfg_aliases",
 ]
 
 [[package]]
@@ -2757,6 +2766,16 @@ name = "smallvec"
 version = "1.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c5e1a9a646d36c3599cd173a41282daf47c44583ad367b8e6837255952e5c67"
+
+[[package]]
+name = "smol_str"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9676b89cd56310a87b93dec47b11af744f34d5fc9f367b829474eec0a891350d"
+dependencies = [
+ "borsh",
+ "serde",
+]
 
 [[package]]
 name = "socket2"

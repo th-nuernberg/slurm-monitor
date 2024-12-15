@@ -6,10 +6,8 @@ edition = "2021"
 [dependencies]
 chrono = { version = "0.4.38", features = ["serde"] }
 color-eyre = "0.6.3"
-config = { version = "0.14.0", default-features = false, features = ["toml"] }
 derive_builder = { version = "0.20.0", features = ["clippy"] }
-derive_more = { version = "1.0.0", features = ["from"] }
-env_logger = "0.11.5"
+derive_more = { version = "1.0.0", features = ["from", "full"] }
 itertools = "0.13.0"
 nvml-wrapper = "0.10.0"
 serde = { version = "1.0.209", features = ["derive"] }

@@ -15,7 +15,13 @@ use itertools::Itertools as _;
 use serde::Deserialize;
 use signal_hook::consts::TERM_SIGNALS;
 use signal_hook_tokio::Signals;
-use std::{collections::HashMap, net::SocketAddr, path::{Path, PathBuf}, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::{
     fs::File,
     io::{AsyncReadExt as _, AsyncWriteExt as _, BufReader, BufWriter},

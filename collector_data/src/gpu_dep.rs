@@ -1,9 +1,14 @@
-use chrono;
-use color_eyre::Result;
+use chrono::{self, DateTime, Duration, Local, Utc};
+use color_eyre::eyre::{bail, ensure, eyre, Context};
+use color_eyre::{Result, Section as _, SectionExt};
+use derive_more::derive::{Add, AddAssign, Deref, Display, Into, Sub, SubAssign};
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::process::Command;
+use std::{collections::HashMap, ops::Range};
 use sysinfo::{PidExt, System, SystemExt};
+
+use crate::slurm::{self, format_datetime_for_slurm, SlurmUser};
 
 use super::job::Job;
 
@@ -154,3 +159,62 @@ impl GpuUsage {
         Ok(gpu_usage_per_pid)
     }
 }
+
+#[derive(Debug, Clone, Copy, Display, Deref, Into, Add, AddAssign, Sub, SubAssign)]
+pub struct GpuTimeReportedBySlurm(Duration);
+
+#[derive(Debug, Clone, Deref, Into)]
+pub struct AllGpuTimesReportedBySlurm(HashMap<SlurmUser, GpuTimeReportedBySlurm>);
+
+impl AllGpuTimesReportedBySlurm {
+    /// Cluster|Account|Login|Proper Name|TRES Name|Used
+    ///
+    /// ```rs
+    /// sacct cluster AccountUtilizationByUser = for acct in Accounts {
+    /// for user in acct.users() {
+    /// // user stats
+    /// }
+    /// }
+    pub fn query(when: Range<DateTime<Utc>>) -> Result<Self> {
+        let sreport = Command::new("sreport")
+            .args(["--noheader", "--parsable2" /* sep by `|` without trailing `|`*/])
+            .args(["-t", "Seconds"])
+            .args(["-T", "gres/gpu"])
+            .arg("cluster")
+            .arg("UserUtilizationByAccount") // TODO wenn acc total auch zählen, => AccountUtilizationByUser
+            .args([
+                &format!("start={}", format_datetime_for_slurm(when.start.with_timezone(&Local))),
+                &format!("end={}", format_datetime_for_slurm(when.end.with_timezone(&Local))),
+            ])
+            .arg("format=Login,Used") // username|time_used
+            .output()?;
+
+        if !sreport.status.success() {
+            return Err(eyre!("sreport failed with status {:?}", sreport.status.code())
+                .note(String::from_utf8_lossy(&sreport.stderr).trim().to_string().header("Stderr:")));
+        }
+
+        Ok(AllGpuTimesReportedBySlurm(
+            String::from_utf8_lossy(&sreport.stdout)
+                .trim()
+                .to_string()
+                .lines()
+                .enumerate()
+                .map(|(i, line)| {
+                    let fields = line.split('|').collect_vec();
+                    match fields.as_slice() {
+                        &[username, secs_reserved] => Ok((
+                            SlurmUser(username.to_owned()),
+                            GpuTimeReportedBySlurm(Duration::seconds(
+                                secs_reserved.parse::<i64>().wrap_err_with(|| format!("line {i}, parsing seconds"))?,
+                            )),
+                        )),
+                        _ => bail!("line {i}: (expected `user|time`, got {line})"),
+                    }
+                })
+                .process_results(|ok| ok.collect())?,
+        ))
+    }
+}
+
+// TODO testing SLURM data fetching: data fetching itself probably hard, parsing would be doable with MockCommand and generics stuff

@@ -1,6 +1,13 @@
 [workspace]
 resolver = "2"
-members = [ "api","backend", "collector", "collector_data", "database", "frontend"]
+members = ["api", "backend", "collector", "collector_data", "database"]
 
 [workspace.lints.clippy]
 unwrap_used = "deny"
+
+[profile.release]
+# Integer ops UB is one of the most annoying sources of problems, especially because it only
+# happens on release. I don't think the speedup is worth it.
+overflow-checks = true
+
+lto = "thin"

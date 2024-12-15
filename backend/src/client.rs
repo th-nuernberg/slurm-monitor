@@ -1,5 +1,9 @@
 use chrono::{DateTime, Duration, Local};
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{
+    collections::HashMap,
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+};
 use tokio::sync::Mutex;
 
 use collector_data::{DEFAULT_INTERVAL, DEFAULT_TIMEOUT};
@@ -13,7 +17,7 @@ pub struct ClientMetadata {
 }
 
 /// https://stackoverflow.com/questions/50282619/is-it-possible-to-share-a-hashmap-between-threads-without-locking-the-entire-has
-pub type ClientMap = Arc<Mutex<HashMap<SocketAddr, ClientMetadata>>>;
+pub type ClientMap = Arc<Mutex<HashMap<IpAddr, ClientMetadata>>>;
 
 impl ClientMetadata {
     pub fn new() -> Self {

@@ -130,7 +130,7 @@ fn register_logging(level: Option<Level>) -> Result<()> {
     let subscriber = tracing_subscriber::FmtSubscriber::builder()
         // all spans/events with a level higher than TRACE (e.g, debug, info, warn, etc.)
         // will be written to stdout.
-        .with_max_level(level.unwrap_or(Level::INFO))
+        .with_max_level(level.unwrap_or(Level::TRACE))
         // completes the builder.
         .finish();
 
@@ -216,7 +216,7 @@ fn start_save_worker(path: &Path, mut control: ControlReceiver) -> Result<(JoinH
                     ctrl_msg = control.recv() => {
                         info!("received `{ctrl_msg:?}`");
                         match ctrl_msg {
-                            Some(ControlMsg::Shutdown) => {shutdown = true; return Ok(())},
+                            Some(ControlMsg::Shutdown) => {shutdown = true;},
                             None => {let msg = "control channel closed prematurely"; error!(msg); bail!(msg)}
                         }
                     },
@@ -245,6 +245,8 @@ fn start_save_worker(path: &Path, mut control: ControlReceiver) -> Result<(JoinH
                 }
                 let num_packets = recv_buf.len();
                 let measurements = recv_buf.into_iter().into_group_map_by(|measurement| measurement.time.date_naive());
+                let num_days = measurements.len();
+                debug!("received {num_packets} packages");
 
                 for (idx, (date, mut packets)) in measurements.into_iter().enumerate() {
                     debug_assert!(packets.iter().all(|m| m.time.date_naive() == date));
@@ -255,21 +257,23 @@ fn start_save_worker(path: &Path, mut control: ControlReceiver) -> Result<(JoinH
                             Span::current().record("when_first", format!("{:?}", packet.time));
                         }
                     }
-                    if idx == num_packets {
+                    if idx == num_days {
                         if let Some(packet) = packets.last() {
                             Span::current().record("when_last", format!("{:?}", packet.time));
                         }
                     }
 
-                    let basename = format!("{date}", date = date.format("%Y-%m-%d"));
+                    let save_file = format!("{date}", date = date.format("%Y-%m-%d"));
 
                     // if file exists but some parsing/reading error occurs, append digit and try again.
-                    let (save_file, mut all_objects) = handle_corrupted_json::<Vec<Measurement>>(&path, &basename, SAVE_FILE_EXT).await;
+                    let (save_file, mut all_objects) = handle_corrupted_json::<Vec<Measurement>>(&path, &save_file, SAVE_FILE_EXT).await;
                     Span::current().record("target_file", &save_file.to_string_lossy().into_owned());
 
+                    trace!("appending {} to {save_file:?} ({} previous)", packets.len(), all_objects.len());
                     all_objects.append(&mut packets);
+                    trace!("all_objects.len() = `{}`", all_objects.len());
 
-                    let writer = File::create(basename).await.context("opening DataObject JSON (2nd time, for writing)")?;
+                    let writer = File::create(save_file).await.context("opening DataObject JSON (2nd time, for writing)")?;
                     let mut writer = BrotliEncoder::with_quality(BufWriter::new(writer), async_compression::Level::Precise(BROTLI_LEVEL));
                     writer
                         .write_all(&serde_json::to_vec_pretty(&all_objects)?)
@@ -285,7 +289,6 @@ fn start_save_worker(path: &Path, mut control: ControlReceiver) -> Result<(JoinH
                 } else {
                     debug!("successfully updated DataObjects, sleeping for 2min");
                 }
-                sleep(Duration::from_secs(120)).await;
                 Ok(())
             }
             .instrument(debug_span!(
@@ -350,7 +353,7 @@ async fn handle_corrupted_json<DeserT: Default + for<'a> Deserialize<'a>>(dir: &
 #[tracing::instrument]
 async fn update_last_recv(client_addr: SocketAddr, client_map: &mut ClientMap) -> Result<()> {
     let mut client_map = client_map.lock().await;
-    client_map.entry(client_addr).or_default().update_last_recv();
+    client_map.entry(client_addr.ip()).or_default().update_last_recv();
 
     Ok(())
 }

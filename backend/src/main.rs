@@ -6,26 +6,23 @@ use clap::Parser as _;
 use cli::Args;
 use client::ClientMap;
 use collector_data::monitoring_info::Measurement;
-use color_eyre::eyre::{bail, eyre, Context, Report, Result};
-use futures::{join, pin_mut, StreamExt as _, TryFutureExt as _};
-use itertools::Itertools;
-use serde::Deserialize;
-use std::{
-    collections::HashMap,
-    net::SocketAddr,
-    path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-    time::Duration,
+use color_eyre::{
+    eyre::{bail, Context as _},
+    Report, Result,
 };
+use futures::{pin_mut, StreamExt as _, TryFutureExt as _};
+use itertools::Itertools as _;
+use serde::Deserialize;
+use signal_hook::consts::TERM_SIGNALS;
+use signal_hook_tokio::Signals;
+use std::{collections::HashMap, net::SocketAddr, path::{Path, PathBuf}, sync::Arc, time::Duration};
 use tokio::{
     fs::File,
     io::{AsyncReadExt as _, AsyncWriteExt as _, BufReader, BufWriter},
     net::{TcpListener, TcpStream},
+    select,
     sync::{
-        mpsc::{error::TryRecvError, unbounded_channel, UnboundedSender},
+        mpsc::{self, error::TryRecvError, unbounded_channel, UnboundedReceiver, UnboundedSender},
         Mutex,
     },
     task::JoinHandle,
@@ -45,54 +42,67 @@ async fn main() -> Result<()> {
     let data_dir = &args.data_dir;
 
     let client_map: ClientMap = Arc::new(Mutex::new(HashMap::new()));
-    let abort_handler = AbortHandler::new()?;
+    let mut control_channel = ControlChannel::new();
 
     register_logging(args.log_level)?;
 
-    let _check_stale_worker_handle = start_check_stale_worker(client_map.clone(), CHECK_STALE_INTERVAL, abort_handler.clone());
-    let (save_worker_handle, save_tx) = start_save_worker(data_dir, abort_handler.clone())?;
+    let _check_stale_worker_handle = start_check_stale_worker(client_map.clone(), CHECK_STALE_INTERVAL, control_channel.new_receiver());
+    let (save_worker_handle, save_tx) = start_save_worker(data_dir, control_channel.new_receiver())?;
 
     let socket = TcpListener::bind((args.ip, args.port)).await?;
     let socket_stream = futures::stream::poll_fn(move |ctx| socket.poll_accept(ctx).map(Option::from)); // TODO (maybe) find out if the closures context arg is relevant to us (and what it means in general)
     let (mut socket_stream, socket_stream_abort_handler) = futures::stream::abortable(socket_stream);
 
     tokio::spawn({
-        let abort_handler = abort_handler.clone();
+        let mut control = control_channel.new_receiver();
         async move {
             // TODO prob. duplicate to `abortable()`
-            while !abort_handler.abort() {
-                let Some(connection) = socket_stream.next().await else {
-                    eprintln!("Collector socket closed; exiting…");
-                    break;
-                };
-                tokio::spawn(
-                    {
-                        let save_tx = save_tx.clone();
-                        let client_map = client_map.clone();
-                        async move {
-                            handle_connection(connection, save_tx, client_map)
-                                .await
-                                .map_err(|e| error!("error in handle_connection: {e:#}"))
+            loop {
+                select! {
+                    ctrl_msg = control.recv() => {
+                        info!("received `{ctrl_msg:?}`");
+                        match ctrl_msg {
+                            Some(ControlMsg::Shutdown) => break,
+                            None => {error!("control channel closed prematurely"); break}
                         }
-                    }
-                    .instrument(span!(Level::TRACE, "handle_connection closure")),
-                );
+                    },
+                    connection = socket_stream.next() => {
+                        match connection {
+                            Some(connection) => tokio::spawn(
+                                {
+                                    let save_tx = save_tx.clone();
+                                    let client_map = client_map.clone();
+                                    async move {
+                                        handle_connection(connection, save_tx, client_map)
+                                            .await
+                                            .map_err(|e| error!("error in handle_connection: {e:#}"))
+                                    }
+                                }
+                                .instrument(span!(Level::TRACE, "handle_connection closure")),
+                            ),
+                            None => {error!("socket closed, exiting even though no `Control::Shutdown` was received"); break}
+                        }
+                    },
+                };
             }
             socket_stream_abort_handler.abort();
         }
-        .instrument(span!(Level::TRACE, "main connection loop"))
+        .instrument(span!(Level::TRACE, "tcp listener loop"))
     });
 
     // wait for abort
-    while !abort_handler.abort() {
-        trace!("waiting for abort_handler");
-
-        // if save_worker crashed (or finished, but usually crashed) for some reason, end prematurely
-        if save_worker_handle.is_finished() {
+    let mut signals = Signals::new(TERM_SIGNALS)?;
+    while let Some(signal) = signals.next().await {
+        // TODO (maybe) sadly signal-hook doesn't provide a way to pretty-print signal names
+        if TERM_SIGNALS.iter().contains(&signal) {
+            info!("received signal `{signal}`, terminating…");
+            let _ = control_channel
+                .send(ControlMsg::Shutdown)
+                .map_err(|e| error!("control channel closed prematurely: {e:#}"));
             break;
+        } else {
+            info!("unhandled signal `{signal}`, terminating…");
         }
-
-        sleep(Duration::from_millis(100)).await;
     }
 
     // TODO into scope guard or, better, object with `drop()`
@@ -100,9 +110,11 @@ async fn main() -> Result<()> {
     // we only join on save_worker, because checking for stale clients is irrelevant at this point, and we explicitly
     // want the `accept()` loop to quit. Downside is hypothetical abortion of open connections, but that would require
     // using the `JoinHandle`s from the nested `spawn()`
-    let _ = join!(save_worker_handle).0.map_err(Report::new).and_then(|x| x).map_err(|e| {
-        error!("save worker crashed: {e:#}");
-    }); // wait for save worker, unwrap if ok (flatten())
+    select! {
+        result = save_worker_handle => {let _ = result.map_err(color_eyre::Report::new).and_then(|x| x).map_err(|e| {
+            error!("save worker crashed: {e:#}");
+        });}, // wait for save worker, unwrap if ok (flatten())},
+    } // wait for save worker, unwrap if ok (flatten())
 
     Ok(())
 }
@@ -119,17 +131,27 @@ fn register_logging(level: Option<Level>) -> Result<()> {
     tracing::subscriber::set_global_default(subscriber).context("setting default subscriber failed")
 }
 
-#[tracing::instrument]
-fn start_check_stale_worker(connections: ClientMap, interval: Duration, abort_handler: AbortHandler) -> JoinHandle<()> {
+#[instrument]
+fn start_check_stale_worker(connections: ClientMap, interval: Duration, mut control: ControlReceiver) -> JoinHandle<()> {
     use tokio::time::interval as new_interval;
     let mut interval = new_interval(interval);
     tokio::spawn(async move {
-        while abort_handler.abort() {
-            interval.tick().await;
+        loop {
+            select! {
+                ctrl_msg = control.recv() => {
+                    info!("received `{ctrl_msg:?}`");
+                    match ctrl_msg {
+                        Some(ControlMsg::Shutdown) => break,
+                        None => {error!("control channel closed prematurely"); break}
+                    }
+                },
+                _ = interval.tick() =>{
 
-            for (client, metadata) in connections.lock().await.iter() {
-                if metadata.has_timed_out() {
-                    warn!("{client}: Client timed out (last seen {})", metadata.last_recv);
+                    for (client, metadata) in connections.lock().await.iter() {
+                        if metadata.has_timed_out() {
+                            warn!("{client}: Client timed out (last seen {})", metadata.last_recv);
+                        }
+                    }
                 }
             }
         }
@@ -169,17 +191,34 @@ async fn handle_connection(
 ///
 /// This needs to run in its own task, to synchronize writing to FS.
 // FIXME (important) check for errors && restart while main loop is running. (Currently, join! only checks at the end)
-fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHandle<Result<()>>, UnboundedSender<Measurement>)> {
+fn start_save_worker(path: &Path, mut control: ControlReceiver) -> Result<(JoinHandle<Result<()>>, UnboundedSender<Measurement>)> {
     let (tx, mut rx) = unbounded_channel();
     let path = path.to_path_buf();
 
     let handle = tokio::spawn(async move {
         // TODO TEST (especially appending and naming behaviour)
         // TODO profile & write timings to logs
-        while !abort_handler.abort() {
+
+        // mut shutdown trick because we can't `return Ok(())` from the async block because that only continues the loop, and we can't break either.
+        let mut shutdown = false;
+        while !shutdown {
             // we need the async block, so we can correctly instrument with a span later. Using Span::enter
             // doesn't work with async.
             async {
+                select! {
+
+                    ctrl_msg = control.recv() => {
+                        info!("received `{ctrl_msg:?}`");
+                        match ctrl_msg {
+                            Some(ControlMsg::Shutdown) => {shutdown = true; return Ok(())},
+                            None => {let msg = "control channel closed prematurely"; error!(msg); bail!(msg)}
+                        }
+                    },
+                    _ = sleep(Duration::from_secs(120)) => {
+                        trace!("waking up from sleep; checking for packets")
+                    },
+
+                }
                 // TODO PERFORMANCE when we receive more data, check out channel::recv_many().
                 // TODO use Abortable and make this simpler snippet work again
                 /*let Some(packet): Option<DataObject> = rx.recv().await else {
@@ -193,11 +232,7 @@ fn start_save_worker(path: &Path, abort_handler: AbortHandler) -> Result<(JoinHa
                         Ok(packet) => recv_buf.push(packet),
                         Err(TryRecvError::Disconnected) => {
                             // only an error if program was not aborted
-                            if abort_handler.abort() {
-                                return Ok(());
-                            } else {
-                                bail!("channel closed")
-                            }
+                            bail!("channel closed");
                         }
                         Err(TryRecvError::Empty) => break,
                     }
@@ -314,26 +349,35 @@ async fn update_last_recv(client_addr: SocketAddr, client_map: &mut ClientMap) -
     Ok(())
 }
 
-// TODO maybe implement `Abortable`
-#[derive(Debug, Clone)]
-struct AbortHandler {
-    atom: Arc<AtomicBool>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlMsg {
+    Shutdown,
 }
 
-impl AbortHandler {
-    pub fn new() -> Result<Self> {
-        let result = Self {
-            atom: Arc::new(AtomicBool::new(false)),
-        };
+// TODO maybe implement `Abortable`
+/// uses mpsc channels to multiplex control messages to tasks/threads
+#[derive(Debug)]
+struct ControlChannel {
+    senders: Vec<UnboundedSender<ControlMsg>>,
+}
 
-        signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&result.atom))?;
-        signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&result.atom))?;
-
-        Ok(result)
+type ControlReceiver = UnboundedReceiver<ControlMsg>;
+impl ControlChannel {
+    pub fn new() -> Self {
+        Self { senders: vec![] }
     }
 
-    pub fn abort(&self) -> bool {
-        self.atom.load(Ordering::Relaxed)
+    pub fn send(&self, msg: ControlMsg) -> Result<()> {
+        for tx in &self.senders {
+            tx.send(msg)?;
+        }
+        Ok(())
+    }
+
+    pub fn new_receiver(&mut self) -> ControlReceiver {
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.senders.push(tx);
+        rx
     }
 }
 

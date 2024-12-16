@@ -1,17 +1,27 @@
 mod cli;
 pub mod client;
 
-use anyhow::{anyhow, bail, Context, Error, Result};
 use async_compression::tokio::write::BrotliEncoder;
 use clap::Parser as _;
 use cli::Args;
 use client::ClientMap;
 use collector_data::monitoring_info::Measurement;
-use futures::{pin_mut, StreamExt as _, TryFutureExt as _};
+use color_eyre::{
+    eyre::{bail, Context as _},
+    Report, Result,
+};
+use futures::{StreamExt as _, TryFutureExt as _};
 use itertools::Itertools as _;
+use serde::Deserialize;
 use signal_hook::consts::TERM_SIGNALS;
 use signal_hook_tokio::Signals;
-use std::{collections::HashMap, net::SocketAddr, path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::{
     fs::File,
     io::{AsyncReadExt as _, AsyncWriteExt as _, BufReader, BufWriter},
@@ -28,9 +38,10 @@ use tracing::{debug, debug_span, error, field, info, instrument, span, trace, wa
 
 const CHECK_STALE_INTERVAL: Duration = Duration::from_secs(5);
 const SAVE_FILE_EXT: &str = "json.br";
+const BROTLI_LEVEL: i32 = 5; // only like 10% worse than 9 while taking 35% of the time
 
-//#[instrument]
-#[tokio::main]
+/// `whorker_threads`: only workers for async tasks (tokio::spawn, main). spawn_blocking spawns extra threads
+#[tokio::main(worker_threads = 4)]
 async fn main() -> Result<()> {
     let args = Args::parse();
     let data_dir = &args.data_dir;
@@ -49,6 +60,7 @@ async fn main() -> Result<()> {
 
     tokio::spawn({
         let mut control = control_channel.new_receiver();
+        let save_tx = save_tx.clone(); // VERY IMPORTANT. otherwise, save_tx gets closed after connection handling shuts down but before we finalize stuff with save_handler.
         async move {
             // TODO prob. duplicate to `abortable()`
             loop {
@@ -85,19 +97,25 @@ async fn main() -> Result<()> {
     });
 
     // wait for abort
-    let mut signals = Signals::new(TERM_SIGNALS)?;
-    while let Some(signal) = signals.next().await {
-        // TODO (maybe) sadly signal-hook doesn't provide a way to pretty-print signal names
-        if TERM_SIGNALS.iter().contains(&signal) {
-            info!("received signal `{signal}`, terminating…");
-            let _ = control_channel
-                .send(ControlMsg::Shutdown)
-                .map_err(|e| error!("control channel closed prematurely: {e:#}"));
-            break;
-        } else {
-            info!("unhandled signal `{signal}`, terminating…");
+    // TODO (maybe) add tracing fields for signals etc.
+    async move {
+        let mut signals = Signals::new(TERM_SIGNALS)?;
+        while let Some(signal) = signals.next().await {
+            // TODO (maybe) sadly signal-hook doesn't provide a way to pretty-print signal names
+            if TERM_SIGNALS.iter().contains(&signal) {
+                info!("received signal `{signal}`, terminating…");
+                let _ = control_channel
+                    .send(ControlMsg::Shutdown)
+                    .map_err(|e| error!("control channel closed prematurely: {e:#}"));
+                break;
+            } else {
+                info!("unhandled signal `{signal}`, terminating…");
+            }
         }
+        Ok::<_, Report>(())
     }
+    .instrument(span!(Level::ERROR, "signal handling"))
+    .await?;
 
     // TODO into scope guard or, better, object with `drop()`
     //
@@ -105,7 +123,7 @@ async fn main() -> Result<()> {
     // want the `accept()` loop to quit. Downside is hypothetical abortion of open connections, but that would require
     // using the `JoinHandle`s from the nested `spawn()`
     select! {
-        result = save_worker_handle => {let _ = result.map_err(anyhow::Error::new).and_then(|x| x).map_err(|e| {
+        result = save_worker_handle => {let _ = result.map_err(color_eyre::Report::new).and_then(|x| x).map_err(|e| {
             error!("save worker crashed: {e:#}");
         });}, // wait for save worker, unwrap if ok (flatten())},
     } // wait for save worker, unwrap if ok (flatten())
@@ -118,7 +136,7 @@ fn register_logging(level: Option<Level>) -> Result<()> {
     let subscriber = tracing_subscriber::FmtSubscriber::builder()
         // all spans/events with a level higher than TRACE (e.g, debug, info, warn, etc.)
         // will be written to stdout.
-        .with_max_level(level.unwrap_or(Level::INFO))
+        .with_max_level(level.unwrap_or(Level::TRACE))
         // completes the builder.
         .finish();
 
@@ -129,27 +147,30 @@ fn register_logging(level: Option<Level>) -> Result<()> {
 fn start_check_stale_worker(connections: ClientMap, interval: Duration, mut control: ControlReceiver) -> JoinHandle<()> {
     use tokio::time::interval as new_interval;
     let mut interval = new_interval(interval);
-    tokio::spawn(async move {
-        loop {
-            select! {
-                ctrl_msg = control.recv() => {
-                    info!("received `{ctrl_msg:?}`");
-                    match ctrl_msg {
-                        Some(ControlMsg::Shutdown) => break,
-                        None => {error!("control channel closed prematurely"); break}
-                    }
-                },
-                _ = interval.tick() =>{
+    tokio::spawn(
+        async move {
+            loop {
+                select! {
+                    ctrl_msg = control.recv() => {
+                        info!("received `{ctrl_msg:?}`");
+                        match ctrl_msg {
+                            Some(ControlMsg::Shutdown) => break,
+                            None => {error!("control channel closed prematurely"); break}
+                        }
+                    },
+                    _ = interval.tick() =>{
 
-                    for (client, metadata) in connections.lock().await.iter() {
-                        if metadata.has_timed_out() {
-                            warn!("{client}: Client timed out (last seen {})", metadata.last_recv);
+                        for (client, metadata) in connections.lock().await.iter() {
+                            if metadata.has_timed_out() {
+                                warn!("{client}: Client timed out (last seen {})", metadata.last_recv);
+                            }
                         }
                     }
                 }
             }
         }
-    })
+        .in_current_span(),
+    )
 }
 
 // FIXME maybe sending raw bytes over network is unsafe (endianness and stuff). (But since this is Unicode, we should be ok?)
@@ -169,7 +190,9 @@ async fn handle_connection(
         .with_context(|| format!("reading TcpStream from {client_addr}"))?;
 
     let packet: Measurement = serde_json::from_slice(&buf)?;
-    save_tx.send(packet).with_context(|| format!("trying to save packet from {client_addr}"))?;
+    save_tx
+        .send(packet)
+        .with_context(|| format!("trying to save packet from {client_addr}"))?;
 
     let _ = update_last_recv(client_addr, &mut client_map)
         .map_err(|e| error!(?e, "Could not update client metadata"))
@@ -194,6 +217,7 @@ fn start_save_worker(path: &Path, mut control: ControlReceiver) -> Result<(JoinH
         // mut shutdown trick because we can't `return Ok(())` from the async block because that only continues the loop, and we can't break either.
         let mut shutdown = false;
         while !shutdown {
+            // TODO a bit of profiling
             // we need the async block, so we can correctly instrument with a span later. Using Span::enter
             // doesn't work with async.
             async {
@@ -202,7 +226,7 @@ fn start_save_worker(path: &Path, mut control: ControlReceiver) -> Result<(JoinH
                     ctrl_msg = control.recv() => {
                         info!("received `{ctrl_msg:?}`");
                         match ctrl_msg {
-                            Some(ControlMsg::Shutdown) => {shutdown = true; return Ok(())},
+                            Some(ControlMsg::Shutdown) => {shutdown = true;},
                             None => {let msg = "control channel closed prematurely"; error!(msg); bail!(msg)}
                         }
                     },
@@ -216,95 +240,74 @@ fn start_save_worker(path: &Path, mut control: ControlReceiver) -> Result<(JoinH
                 /*let Some(packet): Option<DataObject> = rx.recv().await else {
                     return Ok(());
                 };*/
-                let packet: Measurement = match rx.try_recv() {
-                    Ok(packet) => packet,
-                    Err(e @ TryRecvError::Disconnected) => {
-                        info!("save_channel.try_recv(): Disconnected => break out of loop");
-                        return Err(Error::new(e).context("save_channel"));
+                let mut recv_buf: Vec<Measurement> = Vec::with_capacity(rx.len()); // we don't need packages from the previous iter, `recv_many` doesn't clear.
+
+                // unfortunately `recv_many` blocks on empty channel and has clunky behaviour overall
+                loop {
+                    match rx.try_recv() {
+                        Ok(packet) => recv_buf.push(packet),
+                        Err(TryRecvError::Disconnected) => {
+                            // only an error if program was not aborted
+                            bail!("channel closed");
+                        }
+                        Err(TryRecvError::Empty) => break,
                     }
-                    Err(TryRecvError::Empty) => {
-                        trace!("save_channel.try_recv(): Empty => sleep 100ms");
-                        sleep(Duration::from_millis(100)).await;
-                        return Ok(()); // == continue;
+                }
+                let num_packets = recv_buf.len();
+                let measurements = recv_buf.into_iter().into_group_map_by(|measurement| measurement.time.date_naive());
+                let num_days = measurements.len();
+                debug!("received {num_packets} packages");
+
+                for (idx, (date, mut packets)) in measurements.into_iter().enumerate() {
+                    debug_assert!(packets.iter().all(|m| m.time.date_naive() == date));
+
+                    trace!("try_recv(): Ok(packet) => process…");
+                    if idx == 0 {
+                        if let Some(packet) = packets.first() {
+                            Span::current().record("when_first", format!("{:?}", packet.time));
+                        }
                     }
-                };
+                    if idx == num_days {
+                        if let Some(packet) = packets.last() {
+                            Span::current().record("when_last", format!("{:?}", packet.time));
+                        }
+                    }
 
-                trace!("try_recv(): Ok(packet) => process…");
-                Span::current().record("measured_when", format!("{:?}", packet.time));
+                    let save_file = format!("{date}", date = date.format("%Y-%m-%d"));
 
-                let filename = path.join(format!("{date}.{SAVE_FILE_EXT}", date = packet.time.format("%Y-%m-%d")));
-                Span::current().record("target_file", filename.to_string_lossy().as_ref());
+                    // if file exists but some parsing/reading error occurs, append digit and try again.
+                    let (save_file, mut all_objects) = handle_corrupted_json::<Vec<Measurement>>(&path, &save_file, SAVE_FILE_EXT).await;
+                    Span::current().record("target_file", &save_file.to_string_lossy().into_owned());
 
-                // TODO if file exists but some parsing/reading error occurs, append digit and try again.
-                let mut all_objects = if filename.exists() {
-                    let stream = tokio_stream::iter(0_usize..)
-                        .then(|counter| {
-                            let filename = filename.clone();
-                            async move {
-                                let filename = if counter == 0 {
-                                    filename
-                                } else {
-                                    filename.with_file_name(format!(
-                                        "{}.{counter}.{SAVE_FILE_EXT}",
-                                        filename.file_stem().ok_or(anyhow!("no file stem on {filename:?}? wtf"))?.to_string_lossy()
-                                    ))
-                                };
+                    trace!("appending {} to {save_file:?} ({} previous)", packets.len(), all_objects.len());
+                    all_objects.append(&mut packets);
+                    trace!("all_objects.len() = `{}`", all_objects.len());
 
-                                if !filename.exists() {
-                                    // all existing files errored, so we return a fresh start (to keep writing)
-                                    return Ok(Vec::new());
-                                }
-
-                                if filename.exists() && !filename.is_file() {
-                                    error!(
-                                        "WTF. Don't go creating non-regulare file objects like {}. Failed to save JSON, exiting…",
-                                        filename.to_string_lossy()
-                                    );
-                                    bail!("tried to save to {} but it was a non-regular file", filename.to_string_lossy());
-                                }
-
-                                let mut brotli = async_compression::tokio::bufread::BrotliDecoder::new(BufReader::new(File::open(&filename).await?));
-                                let mut buf = String::new();
-                                brotli.read_to_string(&mut buf).await.context("reading DataObject JSON file")?;
-
-                                serde_json::from_str::<Vec<Measurement>>(&buf).context("parsing DataObject JSON (from file)")
-                            }
-                        })
-                        .filter_map(|result| {
-                            std::future::ready(match result {
-                                Ok(val) => Some(val),
-                                Err(e) => {
-                                    warn!("{e:#}: Save file defective, skipping to next…");
-                                    None
-                                }
-                            })
-                        });
-
-                    pin_mut!(stream);
-                    stream
-                        .next()
+                    let writer = File::create(save_file).await.context("opening DataObject JSON (2nd time, for writing)")?;
+                    let mut writer = BrotliEncoder::with_quality(BufWriter::new(writer), async_compression::Level::Precise(BROTLI_LEVEL));
+                    writer
+                        .write_all(&serde_json::to_vec_pretty(&all_objects)?)
                         .await
-                        .ok_or_else(|| anyhow!("Couldn't find a suitable save file (or fallback thereof).\n\n…FML dafuq?!"))?
+                        .context("writing (updated) DataObject JSON")?;
+                    // TODO (maybe) tokio fs is _the horror_, BufWrite drops remaining bytes on drop. build wrapper to ensure these shutdown instructions are always honed.
+                    writer.flush().await?;
+                    writer.shutdown().await?;
+                }
+
+                if num_packets == 0 {
+                    debug!("no packets received, sleeping for 2min");
                 } else {
-                    info!("{} didn't exist when saving, creating.", filename.to_string_lossy());
-                    Vec::default()
-                };
-                all_objects.push(packet);
-
-                let writer = File::create(filename).await.context("opening DataObject JSON (2nd time, for writing)")?;
-                let mut writer = BrotliEncoder::with_quality(BufWriter::new(writer), async_compression::Level::Precise(9));
-                writer
-                    .write_all(&serde_json::to_vec_pretty(&all_objects)?)
-                    .await
-                    .context("writing (updated) DataObject JSON")?;
-                // TODO tokio fs is _the horror_, BufWrite drops remaining bytes on drop. build wrapper to ensure these shutdown instructions are always honed.
-                writer.flush().await?;
-                writer.shutdown().await?;
-
-                debug!("successfully updated DataObjects");
+                    debug!("successfully updated DataObjects, sleeping for 2min");
+                }
                 Ok(())
             }
-            .instrument(debug_span!("save_worker inner loop", measured_when = field::Empty, target_file = field::Empty))
+            .instrument(debug_span!(
+                "save_worker inner loop",
+                num_packets = field::Empty,
+                when_first = field::Empty,
+                when_last = field::Empty,
+                target_file = field::Empty
+            ))
             .await?
         }
         Ok(())
@@ -313,10 +316,54 @@ fn start_save_worker(path: &Path, mut control: ControlReceiver) -> Result<(JoinH
     Ok((handle, tx))
 }
 
-#[instrument]
+#[tracing::instrument]
+async fn handle_corrupted_json<DeserT: Default + for<'a> Deserialize<'a>>(dir: &Path, basename: &str, ext: &str) -> (PathBuf, DeserT) {
+    // TODO (unlikely) pull out try_reading() as closure parameter. Then this would be truly generic.
+    async fn try_reading<DeserT: for<'a> Deserialize<'a>>(filename: &Path) -> Result<DeserT> {
+        let desert_type = std::any::type_name::<DeserT>();
+
+        let mut brotli = async_compression::tokio::bufread::BrotliDecoder::new(BufReader::new(File::open(filename).await?));
+        let mut buf = String::new();
+        brotli
+            .read_to_string(&mut buf)
+            .await
+            .wrap_err_with(|| format!("reading {desert_type} JSON file"))?;
+
+        Ok(serde_json::from_str::<DeserT>(&buf).wrap_err_with(|| format!("parsing {desert_type} JSON (from file)"))?)
+    }
+
+    let desert_type = std::any::type_name::<DeserT>();
+
+    let mut counter: u16 = 0;
+    let mut json_path = dir.join(format!("{basename}.{ext}"));
+
+    loop {
+        if !json_path.exists() {
+            return (json_path, DeserT::default());
+        }
+
+        match try_reading(&json_path).await {
+            Ok(json) => return (json_path, json),
+            Err(e) => {
+                error!("Attempt #{counter} at reading `{desert_type}` JSON … failed! {e:#}");
+            }
+        }
+
+        // gen path befor inc counter, so we can have base.ext => base.0.ext => base.1.ext => …
+        json_path = dir.join(format!("{basename}.{counter}.{ext}"));
+        counter = counter.checked_add(1).unwrap_or_else(|| {
+            panic!(
+                "u16 overflow on `{json_path:?}` (appearently I've tried {} times :surprised_pikachu:)",
+                u16::MAX
+            )
+        });
+    }
+}
+
+#[tracing::instrument]
 async fn update_last_recv(client_addr: SocketAddr, client_map: &mut ClientMap) -> Result<()> {
     let mut client_map = client_map.lock().await;
-    client_map.entry(client_addr).or_default().update_last_recv();
+    client_map.entry(client_addr.ip()).or_default().update_last_recv();
 
     Ok(())
 }
@@ -353,38 +400,135 @@ impl ControlChannel {
     }
 }
 
-/*fn collect(data_dir: impl AsRef<Path>) -> Result<()> {
-    let dataset: HashMap<_, _> = [(
-        "sacct",
-        collect::collect_sacct_json().unwrap_or_else(|e| {
-            eprintln!("Couldn't collect `sacct`: {e}");
-            "".to_owned()
-        }),
-    )]
-    .into_iter()
-    .collect();
+#[cfg(test)]
+#[allow(non_snake_case)]
+mod tests {
+    use super::*;
+    use brotli;
+    use std::fs::OpenOptions;
+    use std::io::{self, Write};
+    use tempfile::tempdir;
 
-    for (what, data) in dataset.iter() {
-        let filename = data_dir.as_ref().join(gen_filename(what));
-        let mut file = File::create_new(filename)?;
-        file.write_all(data.as_bytes())?;
+    fn create_mock_json_br(file_path: &str, content: &str) -> io::Result<()> {
+        let file = OpenOptions::new().write(true).create(true).truncate(true).open(file_path)?;
+        let mut encoder = brotli::CompressorWriter::new(file, 4096, 5, 22);
+        encoder.write_all(content.as_bytes())
     }
 
-    Ok(())
-}o/
+    #[tokio::test]
+    async fn handle_corrupted_json__once() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let (dir, base, ext) = (temp_dir.path(), "2024-12-01", "json.br");
+        let corrupted_content = "{ invalid_json: ,}";
 
-fn gen_filename(what: &str) -> String {
-    let datetime = chrono::Local::now().format("%Y_%m_%d__%H_%M_%S_%3f");
-    format!("{datetime}__{what}.json")
-}
+        // Create a corrupted JSON file
+        create_mock_json_br(&format!("{dir}/{base}.{ext}", dir = dir.to_str().unwrap()), corrupted_content)?;
 
-fn setup(args: &Args) -> Result<()> {
-    // test data dir
-    if !args.data_dir.exists() {
-        std::fs::create_dir_all(&args.data_dir).context("creating data dir")?;
+        // Simulate reading failure by calling the function
+        let (result, _) = handle_corrupted_json::<()>(dir, base, ext).await;
+
+        // Check if the new file was created with suffix .0.json.br
+        let new_file_path = temp_dir.path().join("2024-12-01.0.json.br");
+        assert_eq!(new_file_path, result);
+        Ok(())
     }
-    ensure!(args.data_dir.exists() && args.data_dir.is_dir());
 
-    Ok(())
+    #[tokio::test]
+    async fn handle_corrupted_json__multiple() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let (dir, base, ext) = (temp_dir.path(), "2024-12-02", "json.br");
+        let corrupted_content = "{ invalid_json: ,}";
+
+        // Simulate multiple failures, incrementing suffix each time
+        create_mock_json_br(&format!("{dir}/{base}.{ext}", dir = dir.to_str().unwrap()), corrupted_content)?;
+        create_mock_json_br(&format!("{dir}/{base}.0.{ext}", dir = dir.to_str().unwrap()), corrupted_content)?;
+        create_mock_json_br(&format!("{dir}/{base}.1.{ext}", dir = dir.to_str().unwrap()), corrupted_content)?;
+
+        // handle_corrupted_json() should detect and skip every corrupt file
+        let (result, _) = handle_corrupted_json::<()>(dir, base, ext).await;
+
+        // Check if the second corrupted file was renamed to .2.json.br
+        let new_file_path = temp_dir.path().join("2024-12-02.2.json.br");
+        assert_eq!(new_file_path, result);
+        Ok(())
+    }
+
+    // INTERESTING why do we need allow(non_snake_case) *again*?
+    #[allow(non_snake_case)]
+    #[tokio::test]
+    async fn handle_corrupted_json__no_corruption() -> Result<()> {
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct ValidContent {
+            pub valid_json: bool,
+        }
+        let temp_dir = tempdir()?;
+        let (dir, base, ext) = (temp_dir.path(), "2024-12-03", "json.br");
+        let file_path_str = format!("{dir}/{base}.{ext}", dir = dir.to_str().unwrap());
+        let valid_content = "[{ \"valid_json\": true }]";
+
+        // Create a valid JSON file
+        create_mock_json_br(&file_path_str, &valid_content)?;
+
+        // Simulate reading success, should not trigger renaming
+        let (result, parsed_data) = handle_corrupted_json::<Vec<ValidContent>>(dir, base, ext).await;
+
+        // Ensure the original file still exists
+        assert!(Path::new(&file_path_str).exists());
+        assert_eq!(Path::new(&file_path_str), result);
+        assert_eq!(parsed_data, vec![ValidContent { valid_json: true }]);
+        Ok(())
+    }
+
+    #[allow(non_snake_case)]
+    #[tokio::test]
+    async fn handle_corrupted_json__mixed_files() -> Result<()> {
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct ValidContent {
+            pub valid_json: bool,
+        }
+
+        let temp_dir = tempdir()?;
+        let (dir, base, ext) = (temp_dir.path(), "2024-12-04", "json.br");
+        let corrupted_content = "{ invalid_json: ,}";
+        let valid_content = r#"[{ "valid_json": true }]"#;
+
+        // Create a sequence of corrupted JSON files
+        create_mock_json_br(&format!("{dir}/{base}.{ext}", dir = dir.to_str().unwrap()), corrupted_content)?;
+        create_mock_json_br(&format!("{dir}/{base}.0.{ext}", dir = dir.to_str().unwrap()), corrupted_content)?;
+
+        // Create a valid JSON file at the third iteration
+        create_mock_json_br(&format!("{dir}/{base}.1.{ext}", dir = dir.to_str().unwrap()), valid_content)?;
+
+        // Call the function
+        let (result, parsed_data) = handle_corrupted_json::<Vec<ValidContent>>(dir, base, ext).await;
+
+        // The function should return the valid file path
+        let expected_file_path = temp_dir.path().join(format!("{base}.1.{ext}"));
+        assert_eq!(expected_file_path, result);
+        assert!(expected_file_path.exists());
+
+        // The parsed content should match the valid JSON structure
+        assert_eq!(parsed_data, vec![ValidContent { valid_json: true }]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "u16 overflow")]
+    async fn handle_corrupted_json__u16_max_panic_SLOW() {
+        let temp_dir = tempdir().unwrap();
+        let (dir, base, ext) = (temp_dir.path(), "2024-12-05", "json.br");
+        let corrupted_content = "{ invalid_json: ,}";
+
+        // base JSON
+        create_mock_json_br(dir.join(format!("{base}.{ext}")).to_str().unwrap(), corrupted_content).unwrap();
+        // Create u16::MAX corrupted JSON files
+        for i in 0..=u16::MAX {
+            let base = format!("{base}.{i}.{ext}");
+            let file_path = dir.join(base);
+            create_mock_json_br(file_path.to_str().unwrap(), corrupted_content).unwrap();
+        }
+
+        // This should panic due to u16 overflow
+        let _ = handle_corrupted_json::<()>(dir, base, ext).await;
+    }
 }
-*/

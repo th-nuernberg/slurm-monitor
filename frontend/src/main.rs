@@ -37,8 +37,8 @@ use render::plot;
 const SACCT_HEADER_JOBID: &str = "JobID";
 
 static DATA_SACCT: Lazy<RwLock<Vec<(NaiveDateTime, String)>>> = Lazy::new(|| RwLock::new(vec![]));
-
-#[tokio::main]
+/// `worker_threads`: only workers for async tasks (tokio::spawn, main). spawn_blocking spawns extra threads
+#[tokio::main(worker_threads = 4)]
 async fn main() -> Result<()> {
     // initialize tracing
     // tracing_subscriber::fmt::init();

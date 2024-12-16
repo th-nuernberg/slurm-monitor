@@ -1,24 +1,3 @@
-// could look like this:
-//
-// struct SAcct {
-//     jobid: String,
-//     jobidraw: String,
-//     jobname: String,
-//     user: String,
-
-//     elapsed: String, // TODO parse time
-//     state: String,   // TODO maybe parse enum?
-
-//     partition: String,
-//     ntasks: u32,
-//     alloccpus: u32,
-
-//     maxrss: String, // TODO parse units
-//     averss: String, // TODO parse units
-//     avecpu: String, // TODO parse time
-
-//     consumedenergy: f64,
-// }
 pub mod cpu;
 pub mod gpu;
 pub mod gpu_dep;
@@ -26,6 +5,7 @@ pub mod job;
 pub mod misc;
 pub mod monitoring_info;
 pub mod node;
+pub mod slurm;
 
 use std::path::{Path, PathBuf};
 
@@ -34,6 +14,7 @@ use color_eyre::{
     eyre::{ensure, eyre},
     Result,
 };
+use tracing::trace;
 
 pub const DEFAULT_INTERVAL: Duration = Duration::seconds(30);
 pub const DEFAULT_TIMEOUT: Duration = Duration::seconds(30);
@@ -44,11 +25,12 @@ pub const FILENAME_SUFFIX: &str = "json.br";
 #[tracing::instrument(skip(path), fields(path=format!("{:?}", path.as_ref())))]
 pub fn parse_filename(path: impl AsRef<Path>) -> Result<NaiveDate> {
     let path = path.as_ref();
-    let filename = path.file_stem().ok_or_else(|| eyre!("File has no file stem: {path:?}"))?;
+    let filename = path.file_name().ok_or_else(|| eyre!("File has no file stem: {path:?}"))?;
     let filename = filename.to_str().ok_or_else(|| eyre!("File name contains non-unicode: {filename:?}"))?;
 
     let (date, suffix) = NaiveDate::parse_and_remainder(filename, FILENAME_DATE_FMT)?;
 
+    trace!(filename, ?date, suffix);
     ensure!(suffix == format!(".{FILENAME_SUFFIX}"));
 
     Ok(date)
@@ -69,7 +51,7 @@ mod tests {
 
     #[test]
     fn generate_filename_() {
-        let date = NaiveDate::from_ymd(2024, 11, 15);
+        let date = NaiveDate::from_ymd_opt(2024, 11, 15).expect("invalid ymd");
         let expected_filename = "2024-11-15.json.br";
         let generated_filename = generate_filename(date);
         assert_eq!(generated_filename, PathBuf::from(expected_filename));
@@ -78,14 +60,14 @@ mod tests {
     #[test]
     fn parse_filename_valid() {
         let path = PathBuf::from("2024-11-15.json.br");
-        let expected_date = NaiveDate::from_ymd(2024, 11, 15);
+        let expected_date = NaiveDate::from_ymd_opt(2024, 11, 15).expect("invalid ymd");
         let parsed_date = parse_filename(path).expect("Failed to parse valid filename");
         assert_eq!(parsed_date, expected_date);
     }
 
     #[test]
     fn parse_and_generate_roundtrip() {
-        let original_date = NaiveDate::from_ymd(2024, 11, 15);
+        let original_date = NaiveDate::from_ymd_opt(2024, 11, 15).expect("invalid ymd");
         let filename = generate_filename(original_date);
         let parsed_date = parse_filename(filename).expect("Failed to parse generated filename");
         assert_eq!(parsed_date, original_date);
@@ -128,7 +110,7 @@ mod tests {
 
     #[test]
     fn generate_filename_edge_case() {
-        let date = NaiveDate::from_ymd(1900, 1, 1);
+        let date = NaiveDate::from_ymd_opt(1900, 1, 1).expect("invalid ymd");
         let expected_filename = "1900-01-01.json.br";
         let generated_filename = generate_filename(date);
         assert_eq!(generated_filename, PathBuf::from(expected_filename));
@@ -136,7 +118,7 @@ mod tests {
 
     #[test]
     fn parse_and_generate_roundtrip_edge_case() {
-        let original_date = NaiveDate::from_ymd(1900, 1, 1);
+        let original_date = NaiveDate::from_ymd_opt(1900, 1, 1).expect("invalid ymd");
         let filename = generate_filename(original_date);
         let parsed_date = parse_filename(filename).expect("Failed to parse generated filename");
         assert_eq!(parsed_date, original_date);

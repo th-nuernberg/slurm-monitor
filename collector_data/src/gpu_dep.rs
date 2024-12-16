@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::process::Command;
 use std::{collections::HashMap, ops::Range};
 use sysinfo::{PidExt, System, SystemExt};
+use tracing::debug;
 
 use crate::slurm::{format_datetime_for_slurm, SlurmUser};
 
@@ -175,19 +176,25 @@ impl AllGpuTimesReportedBySlurm {
     /// // user stats
     /// }
     /// }
+    #[tracing::instrument]
     pub fn query(when: Range<DateTime<Utc>>) -> Result<Self> {
-        let sreport = Command::new("sreport")
+        let mut sreport = Command::new("sreport");
+        sreport
             .args(["--noheader", "--parsable2" /* sep by `|` without trailing `|`*/])
             .args(["-t", "Seconds"])
             .args(["-T", "gres/gpu"])
             .arg("cluster")
-            .arg("UserUtilizationByAccount") // TODO wenn acc total auch zählen, => AccountUtilizationByUser
+            .arg("UserUtilizationByAccount")
             .args([
                 &format!("start={}", format_datetime_for_slurm(when.start.with_timezone(&Local))),
                 &format!("end={}", format_datetime_for_slurm(when.end.with_timezone(&Local))),
             ])
-            .arg("format=Login,Used") // username|time_used
-            .output()?;
+            .arg("format=Login,Used"); // username|time_used
+        debug!(
+            cmd = sreport.get_args().map(|s| format!("'{}'", s.to_string_lossy())).join(" "),
+            "executing sreport",
+        );
+        let sreport = sreport.output()?;
 
         if !sreport.status.success() {
             return Err(eyre!("sreport failed with status {:?}", sreport.status.code())

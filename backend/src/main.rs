@@ -217,6 +217,7 @@ fn start_save_worker(path: &Path, mut control: ControlReceiver) -> Result<(JoinH
         // mut shutdown trick because we can't `return Ok(())` from the async block because that only continues the loop, and we can't break either.
         let mut shutdown = false;
         while !shutdown {
+            // TODO a bit of profiling
             // we need the async block, so we can correctly instrument with a span later. Using Span::enter
             // doesn't work with async.
             async {

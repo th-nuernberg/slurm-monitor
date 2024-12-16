@@ -1,9 +1,5 @@
 use chrono::{DateTime, Duration, Local};
-use std::{
-    collections::HashMap,
-    net::IpAddr,
-    sync::Arc,
-};
+use std::{collections::HashMap, net::IpAddr, sync::Arc};
 use tokio::sync::Mutex;
 
 use collector_data::{DEFAULT_INTERVAL, DEFAULT_TIMEOUT};

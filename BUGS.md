@@ -21,7 +21,7 @@
     - Slurm hat (hearsay) ne schnittstelle, die das aggregiert
 ## Data collection
 - IO, file system usage%
-- fds (z.B.)
+- fds (z.B.) / inodes
 
 - which user "illegaly" logged onto which ml node (none is allowed!)
 

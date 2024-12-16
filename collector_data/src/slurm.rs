@@ -15,7 +15,7 @@ pub struct SlurmUser(pub String);
 /// hypothesis)
 // TODO maybe check that out ^^^
 pub fn format_datetime_for_slurm(date: DateTime<Local>) -> String {
-    const FMT: &str = "%Y-%m-%dT%H:%M:%S%.f";
+    const FMT: &str = "%Y-%m-%dT%H:%M:%S";
     // ISO 8601 / RFC 3339
     date.format(FMT).to_string()
 }

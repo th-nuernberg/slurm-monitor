@@ -51,7 +51,7 @@ mod tests {
 
     #[test]
     fn generate_filename_() {
-        let date = NaiveDate::from_ymd(2024, 11, 15);
+        let date = NaiveDate::from_ymd_opt(2024, 11, 15).expect("invalid ymd");
         let expected_filename = "2024-11-15.json.br";
         let generated_filename = generate_filename(date);
         assert_eq!(generated_filename, PathBuf::from(expected_filename));
@@ -60,14 +60,14 @@ mod tests {
     #[test]
     fn parse_filename_valid() {
         let path = PathBuf::from("2024-11-15.json.br");
-        let expected_date = NaiveDate::from_ymd(2024, 11, 15);
+        let expected_date = NaiveDate::from_ymd_opt(2024, 11, 15).expect("invalid ymd");
         let parsed_date = parse_filename(path).expect("Failed to parse valid filename");
         assert_eq!(parsed_date, expected_date);
     }
 
     #[test]
     fn parse_and_generate_roundtrip() {
-        let original_date = NaiveDate::from_ymd(2024, 11, 15);
+        let original_date = NaiveDate::from_ymd_opt(2024, 11, 15).expect("invalid ymd");
         let filename = generate_filename(original_date);
         let parsed_date = parse_filename(filename).expect("Failed to parse generated filename");
         assert_eq!(parsed_date, original_date);
@@ -110,7 +110,7 @@ mod tests {
 
     #[test]
     fn generate_filename_edge_case() {
-        let date = NaiveDate::from_ymd(1900, 1, 1);
+        let date = NaiveDate::from_ymd_opt(1900, 1, 1).expect("invalid ymd");
         let expected_filename = "1900-01-01.json.br";
         let generated_filename = generate_filename(date);
         assert_eq!(generated_filename, PathBuf::from(expected_filename));
@@ -118,7 +118,7 @@ mod tests {
 
     #[test]
     fn parse_and_generate_roundtrip_edge_case() {
-        let original_date = NaiveDate::from_ymd(1900, 1, 1);
+        let original_date = NaiveDate::from_ymd_opt(1900, 1, 1).expect("invalid ymd");
         let filename = generate_filename(original_date);
         let parsed_date = parse_filename(filename).expect("Failed to parse generated filename");
         assert_eq!(parsed_date, original_date);

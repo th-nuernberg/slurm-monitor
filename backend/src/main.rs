@@ -10,7 +10,7 @@ use color_eyre::{
     eyre::{bail, Context as _},
     Report, Result,
 };
-use futures::{pin_mut, StreamExt as _, TryFutureExt as _};
+use futures::{StreamExt as _, TryFutureExt as _};
 use itertools::Itertools as _;
 use serde::Deserialize;
 use signal_hook::consts::TERM_SIGNALS;
@@ -38,7 +38,6 @@ use tracing::{debug, debug_span, error, field, info, instrument, span, trace, wa
 
 const CHECK_STALE_INTERVAL: Duration = Duration::from_secs(5);
 const SAVE_FILE_EXT: &str = "json.br";
-const MAX_SAVE_PACKETS_AT_ONCE: usize = 1024;
 const BROTLI_LEVEL: i32 = 5; // only like 10% worse than 9 while taking 35% of the time
 
 /// `whorker_threads`: only workers for async tasks (tokio::spawn, main). spawn_blocking spawns extra threads
@@ -61,6 +60,7 @@ async fn main() -> Result<()> {
 
     tokio::spawn({
         let mut control = control_channel.new_receiver();
+        let save_tx = save_tx.clone(); // VERY IMPORTANT. otherwise, save_tx gets closed after connection handling shuts down but before we finalize stuff with save_handler.
         async move {
             // TODO prob. duplicate to `abortable()`
             loop {
@@ -97,19 +97,25 @@ async fn main() -> Result<()> {
     });
 
     // wait for abort
-    let mut signals = Signals::new(TERM_SIGNALS)?;
-    while let Some(signal) = signals.next().await {
-        // TODO (maybe) sadly signal-hook doesn't provide a way to pretty-print signal names
-        if TERM_SIGNALS.iter().contains(&signal) {
-            info!("received signal `{signal}`, terminating…");
-            let _ = control_channel
-                .send(ControlMsg::Shutdown)
-                .map_err(|e| error!("control channel closed prematurely: {e:#}"));
-            break;
-        } else {
-            info!("unhandled signal `{signal}`, terminating…");
+    // TODO (maybe) add tracing fields for signals etc.
+    async move {
+        let mut signals = Signals::new(TERM_SIGNALS)?;
+        while let Some(signal) = signals.next().await {
+            // TODO (maybe) sadly signal-hook doesn't provide a way to pretty-print signal names
+            if TERM_SIGNALS.iter().contains(&signal) {
+                info!("received signal `{signal}`, terminating…");
+                let _ = control_channel
+                    .send(ControlMsg::Shutdown)
+                    .map_err(|e| error!("control channel closed prematurely: {e:#}"));
+                break;
+            } else {
+                info!("unhandled signal `{signal}`, terminating…");
+            }
         }
+        Ok::<_, Report>(())
     }
+    .instrument(span!(Level::ERROR, "signal handling"))
+    .await?;
 
     // TODO into scope guard or, better, object with `drop()`
     //
@@ -141,27 +147,30 @@ fn register_logging(level: Option<Level>) -> Result<()> {
 fn start_check_stale_worker(connections: ClientMap, interval: Duration, mut control: ControlReceiver) -> JoinHandle<()> {
     use tokio::time::interval as new_interval;
     let mut interval = new_interval(interval);
-    tokio::spawn(async move {
-        loop {
-            select! {
-                ctrl_msg = control.recv() => {
-                    info!("received `{ctrl_msg:?}`");
-                    match ctrl_msg {
-                        Some(ControlMsg::Shutdown) => break,
-                        None => {error!("control channel closed prematurely"); break}
-                    }
-                },
-                _ = interval.tick() =>{
+    tokio::spawn(
+        async move {
+            loop {
+                select! {
+                    ctrl_msg = control.recv() => {
+                        info!("received `{ctrl_msg:?}`");
+                        match ctrl_msg {
+                            Some(ControlMsg::Shutdown) => break,
+                            None => {error!("control channel closed prematurely"); break}
+                        }
+                    },
+                    _ = interval.tick() =>{
 
-                    for (client, metadata) in connections.lock().await.iter() {
-                        if metadata.has_timed_out() {
-                            warn!("{client}: Client timed out (last seen {})", metadata.last_recv);
+                        for (client, metadata) in connections.lock().await.iter() {
+                            if metadata.has_timed_out() {
+                                warn!("{client}: Client timed out (last seen {})", metadata.last_recv);
+                            }
                         }
                     }
                 }
             }
         }
-    })
+        .in_current_span(),
+    )
 }
 
 // FIXME maybe sending raw bytes over network is unsafe (endianness and stuff). (But since this is Unicode, we should be ok?)
@@ -443,6 +452,8 @@ mod tests {
         Ok(())
     }
 
+    // INTERESTING why do we need allow(non_snake_case) *again*?
+    #[allow(non_snake_case)]
     #[tokio::test]
     async fn handle_corrupted_json__no_corruption() -> Result<()> {
         #[derive(Debug, Deserialize, PartialEq)]
@@ -467,6 +478,7 @@ mod tests {
         Ok(())
     }
 
+    #[allow(non_snake_case)]
     #[tokio::test]
     async fn handle_corrupted_json__mixed_files() -> Result<()> {
         #[derive(Debug, Deserialize, PartialEq)]

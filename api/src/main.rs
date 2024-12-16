@@ -4,29 +4,22 @@ use std::{
     collections::HashMap,
     convert::Infallible,
     fmt::Display,
-    ops::{Deref, Range},
+    ops::Deref,
     path::{Path, PathBuf},
     sync::Arc,
-    time::UNIX_EPOCH,
-    usize,
 };
 
 use async_compression::tokio::bufread::BrotliDecoder;
 use chrono::{DateTime, NaiveDate, Utc};
 use clap::Parser;
-use collector_data::{
-    gpu::GpuUsage,
-    gpu_dep::AllGpuTimesReportedBySlurm,
-    monitoring_info::{Measurement, MonitorInfo},
-};
+use collector_data::{gpu_dep::AllGpuTimesReportedBySlurm, monitoring_info::Measurement};
 use color_eyre::{
     eyre::{ensure, Context},
     Report, Result,
 };
-use data::GpuHoursPerUser;
 use futures::TryFutureExt as _;
 use itertools::Itertools as _;
-use poem::{http::StatusCode, listener::TcpListener, Endpoint as _, EndpointExt, Response, Route, Server};
+use poem::{http::StatusCode, listener::TcpListener, Endpoint as _, EndpointExt, Route, Server};
 use poem_openapi::{
     param::{Path as PathParam, Query},
     payload::{Json, PlainText},

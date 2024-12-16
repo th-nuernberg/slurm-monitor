@@ -1,5 +1,5 @@
 use chrono::{self, DateTime, Duration, Local, Utc};
-use color_eyre::eyre::{bail, ensure, eyre, Context};
+use color_eyre::eyre::{bail, eyre, Context};
 use color_eyre::{Result, Section as _, SectionExt};
 use derive_more::derive::{Add, AddAssign, Deref, Display, Into, Sub, SubAssign};
 use itertools::Itertools;
@@ -8,7 +8,7 @@ use std::process::Command;
 use std::{collections::HashMap, ops::Range};
 use sysinfo::{PidExt, System, SystemExt};
 
-use crate::slurm::{self, format_datetime_for_slurm, SlurmUser};
+use crate::slurm::{format_datetime_for_slurm, SlurmUser};
 
 use super::job::Job;
 

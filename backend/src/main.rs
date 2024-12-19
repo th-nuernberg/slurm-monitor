@@ -51,7 +51,11 @@ async fn main() -> Result<()> {
     register_logging(args.log_level)?;
     let _sentry_guard = install_sentry();
 
-
+    error!("sample sentry error");
+    warn!("sample sentry warn");
+    info!("sample sentry info");
+    debug!("sample sentry debug");
+    trace!("sample sentry trace");
 
     let client_map: ClientMap = Arc::new(Mutex::new(HashMap::new()));
     let mut control_channel = ControlChannel::new();
@@ -64,6 +68,7 @@ async fn main() -> Result<()> {
     let (mut socket_stream, socket_stream_abort_handler) = futures::stream::abortable(socket_stream);
 
     tokio::spawn({
+        info!("starting `tcp_stream_handler`");
         let mut control = control_channel.new_receiver();
         let save_tx = save_tx.clone(); // VERY IMPORTANT. otherwise, save_tx gets closed after connection handling shuts down but before we finalize stuff with save_handler.
         async move {
@@ -137,6 +142,7 @@ async fn main() -> Result<()> {
 }
 
 fn register_logging(level: Option<Level>) -> Result<()> {
+    use sentry::integrations::tracing::EventFilter;
     // a builder for `FmtSubscriber`.
     let subscriber = tracing_subscriber::FmtSubscriber::builder()
         // all spans/events with a level higher than TRACE (e.g, debug, info, warn, etc.)
@@ -146,12 +152,18 @@ fn register_logging(level: Option<Level>) -> Result<()> {
         .finish();
 
     tracing::subscriber::set_global_default(subscriber
-        .with(sentry::integrations::tracing::layer())).context("setting default subscriber failed")
+        .with(sentry::integrations::tracing::layer().event_filter(|md| match md.level() {
+            &tracing::Level::TRACE => EventFilter::Ignore,
+            &tracing::Level::ERROR => EventFilter::Exception,
+            _ => EventFilter::Event,
+            
+        }))).context("setting default subscriber failed")
 }
 
 fn install_sentry() -> sentry::ClientInitGuard {
     let guard = sentry::init(("https://c3abe257195f87e5c961aaaa8841c23b@o4508494033321984.ingest.de.sentry.io/4508494036598864", sentry::ClientOptions {
         release: sentry::release_name!(),
+        traces_sample_rate: 1.0f32,
         ..Default::default()
       }));
       guard
@@ -159,6 +171,7 @@ fn install_sentry() -> sentry::ClientInitGuard {
 
 #[instrument]
 fn start_check_stale_worker(connections: ClientMap, interval: Duration, mut control: ControlReceiver) -> JoinHandle<()> {
+    info!("starting `check_stale_worker`");
     use tokio::time::interval as new_interval;
     let mut interval = new_interval(interval);
     tokio::spawn(
@@ -221,6 +234,7 @@ async fn handle_connection(
 /// This needs to run in its own task, to synchronize writing to FS.
 // FIXME (important) check for errors && restart while main loop is running. (Currently, join! only checks at the end)
 fn start_save_worker(path: &Path, mut control: ControlReceiver) -> Result<(JoinHandle<Result<()>>, UnboundedSender<Measurement>)> {
+    info!("starting `save_worker`");
     let (tx, mut rx) = unbounded_channel();
     let path = path.to_path_buf();
 

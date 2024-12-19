@@ -15,6 +15,7 @@ use itertools::Itertools as _;
 use serde::Deserialize;
 use signal_hook::consts::TERM_SIGNALS;
 use signal_hook_tokio::Signals;
+use tracing_subscriber::layer::SubscriberExt;
 use std::{
     collections::HashMap,
     net::SocketAddr,
@@ -46,10 +47,14 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let data_dir = &args.data_dir;
 
+    color_eyre::install()?;
+    register_logging(args.log_level)?;
+    let _sentry_guard = install_sentry();
+
+
+
     let client_map: ClientMap = Arc::new(Mutex::new(HashMap::new()));
     let mut control_channel = ControlChannel::new();
-
-    register_logging(args.log_level)?;
 
     let _check_stale_worker_handle = start_check_stale_worker(client_map.clone(), CHECK_STALE_INTERVAL, control_channel.new_receiver());
     let (save_worker_handle, save_tx) = start_save_worker(data_dir, control_channel.new_receiver())?;
@@ -140,7 +145,16 @@ fn register_logging(level: Option<Level>) -> Result<()> {
         // completes the builder.
         .finish();
 
-    tracing::subscriber::set_global_default(subscriber).context("setting default subscriber failed")
+    tracing::subscriber::set_global_default(subscriber
+        .with(sentry::integrations::tracing::layer())).context("setting default subscriber failed")
+}
+
+fn install_sentry() -> sentry::ClientInitGuard {
+    let guard = sentry::init(("https://c3abe257195f87e5c961aaaa8841c23b@o4508494033321984.ingest.de.sentry.io/4508494036598864", sentry::ClientOptions {
+        release: sentry::release_name!(),
+        ..Default::default()
+      }));
+      guard
 }
 
 #[instrument]
